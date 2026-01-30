@@ -1,0 +1,51 @@
+name: Daily Stock Analysis Report
+
+# 언제 실행할까요? (트리거)
+on:
+  schedule:
+    # 🕒 시간 설정 (UTC 기준)
+    # 한국 시간 아침 8시 = UTC 전날 밤 23:00
+    # 화~토요일 실행 (미국장은 월~금 열리지만, 한국 시간으로는 화~토 새벽에 마감되므로)
+    - cron: '0 23 * * 1-5'
+
+  # ✋ 수동 실행 버튼 (테스트용)
+  # GitHub 웹사이트에서 'Run workflow' 버튼을 눌러서 즉시 실행해볼 수 있습니다.
+  workflow_dispatch:
+
+jobs:
+  stock-analysis:
+    runs-on: ubuntu-latest # 깃허브가 빌려주는 빈 깡통 컴퓨터 (우분투 리눅스)
+
+    steps:
+    # 1. 저장소의 코드를 이 컴퓨터로 내려받기
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 2. 파이썬 설치하기 (3.11 버전)
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. 필요한 라이브러리 설치하기
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas yfinance google-genai sqlalchemy prefect python-dotenv tabulate markdown jinja2
+
+    # 4. 데이터 폴더 만들기 (DB 파일 들어갈 곳이 필요하다면)
+    - name: Create data directory
+      run: mkdir -p data
+
+    # 5. 메인 스크립트 실행 🚀
+    - name: Run Main Script
+      env:
+        # 깃허브 설정 페이지(Secrets)에 저장해둔 비밀키들을 불러옵니다
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        # DB 파일명 등 환경변수 설정
+        DB_FILENAME: my_stock_data.db
+      run: |
+        python -m app.main
