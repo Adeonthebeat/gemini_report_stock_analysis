@@ -52,14 +52,4 @@ def stock_analysis_pipeline():
 
 if __name__ == "__main__":
     # 스케줄 설정: 화~토 오전 9:30 (KST)
-    my_schedule = CronSchedule(
-        cron="0 7 * * 2-6",
-        timezone="Asia/Seoul"
-    )
-
-    stock_analysis_pipeline.serve(
-        name="daily-stock-analysis-deployment",
-        schedule=my_schedule,
-        tags=["stock", "analysis"],
-        description="매일 오전 7시 (KST) 주식 분석 및 리포트 생성"
-    )
+    stock_analysis_pipeline()
