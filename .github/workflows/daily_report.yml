@@ -9,7 +9,6 @@ on:
     - cron: '0 23 * * 1-5'
 
   # ✋ 수동 실행 버튼 (테스트용)
-  # GitHub 웹사이트에서 'Run workflow' 버튼을 눌러서 즉시 실행해볼 수 있습니다.
   workflow_dispatch:
 
 jobs:
@@ -31,11 +30,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas yfinance google-genai sqlalchemy prefect python-dotenv tabulate markdown jinja2
+        # [수정됨] psycopg2-binary 추가 (PostgreSQL 접속용 필수!)
+        pip install pandas yfinance google-genai sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary
 
-    # 4. 데이터 폴더 만들기 (DB 파일 들어갈 곳이 필요하다면)
-    - name: Create data directory
-      run: mkdir -p data
+    # 4. (삭제됨) 데이터 폴더 만들기 단계는 이제 필요 없습니다. (클라우드 DB니까요!)
 
     # 5. 메인 스크립트 실행 🚀
     - name: Run Main Script
@@ -45,7 +43,9 @@ jobs:
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-        # DB 파일명 등 환경변수 설정
-        DB_FILENAME: my_stock_data.db
+
+        # [수정됨] 여기가 핵심! Supabase 주소를 비밀 금고에서 꺼내줍니다.
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
       run: |
         python -m app.main
