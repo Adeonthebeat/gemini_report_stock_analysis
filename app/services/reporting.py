@@ -30,14 +30,22 @@ def generate_ai_report():
 
     # 상위 종목 추출 쿼리 (기존과 동일)
     query = text("""
-        SELECT m.NAME, w.TICKER, w.RS_RATING, f.FUNDAMENTAL_GRADE, 
-               f.EPS_RATING, w.WEEKLY_RETURN, w.DEVIATION_200MA
-        FROM PRICE_WEEKLY w
-        JOIN STOCK_MASTER m ON w.TICKER = m.TICKER
-        LEFT JOIN STOCK_FUNDAMENTALS f ON w.TICKER = f.TICKER    
-        WHERE w.WEEKLY_DATE = (SELECT MAX(WEEKLY_DATE) FROM PRICE_WEEKLY)
-          AND w.RS_RATING >= 90 AND f.FUNDAMENTAL_GRADE = 'A'
-          AND w.WEEKLY_RETURN > 0
+        SELECT  m.NAME
+        ,       w.TICKER
+        ,       w.RS_RATING
+        ,       f.FUNDAMENTAL_GRADE
+        ,       f.EPS_RATING
+        ,       w.WEEKLY_RETURN
+        ,       w.DEVIATION_200MA
+        FROM    PRICE_WEEKLY w
+        INNER JOIN STOCK_MASTER m 
+            ON  w.TICKER = m.TICKER
+        LEFT JOIN STOCK_FUNDAMENTALS f 
+            ON  w.TICKER = f.TICKER    
+        WHERE   w.WEEKLY_DATE = (SELECT MAX(WEEKLY_DATE) FROM PRICE_WEEKLY)
+        AND     w.RS_RATING >= 90 AND f.FUNDAMENTAL_GRADE = 'A'
+        AND     w.WEEKLY_RETURN > 0
+        AND     w.RS_MOMENTUM > 0
         ORDER BY w.RS_RATING DESC LIMIT 30
     """)
 
@@ -51,9 +59,9 @@ def generate_ai_report():
     # Gemini 분석 요청 프롬프트
     data_table = df.to_markdown(index=False)
     prompt = f"""
-    당신은 윌리엄 오닐 스타일과 드러켄밀러 스타일을 지닌 퀀트 애널리스트입니다. 
+    당신은 윌리엄 오닐 스타일을 지닌 퀀트 애널리스트입니다. 
     
-    다음 슈퍼 주도주 데이터를 윌리엄오닐 스타일과 드러켄밀러 스타일로 나눠서 분석해 주세요:
+    다음 슈퍼 주도주 데이터를 분석해 주세요:
     
     {data_table}
 

@@ -2,11 +2,10 @@ import os
 from sqlalchemy import create_engine
 from app.core.config import BASE_DIR
 
-# 1. 환경변수(GitHub Secrets)에서 주소 가져오기
-DATABASE_URL = os.getenv("DATABASE_URL")
-
 
 def get_engine():
+    DATABASE_URL = os.getenv("DATABASE_URL")
+
     # A. 클라우드 DB 주소가 있으면? (GitHub Actions 환경) -> 거기로 연결!
     if DATABASE_URL:
         # SQLAlchemy는 'postgres://' 대신 'postgresql://'을 좋아합니다. (호환성 처리)
