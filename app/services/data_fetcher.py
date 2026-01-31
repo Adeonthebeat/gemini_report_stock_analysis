@@ -21,7 +21,7 @@ def check_market_data_update(benchmark='VTI'):
         return False
 
     with engine.connect() as conn:
-        query = text("SELECT MAX(DATE) FROM PRICE_DAILY WHERE TICKER = :ticker")
+        query = text("select max(date) from price_daily where ticker = :ticker")
         result = conn.execute(query, {"ticker": benchmark}).scalar()
 
     if result and result >= latest_market_date:

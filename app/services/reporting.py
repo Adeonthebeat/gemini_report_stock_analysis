@@ -45,7 +45,6 @@ def generate_ai_report():
         WHERE   w.WEEKLY_DATE = (SELECT MAX(WEEKLY_DATE) FROM PRICE_WEEKLY)
         AND     w.RS_RATING >= 90 AND f.FUNDAMENTAL_GRADE = 'A'
         AND     w.WEEKLY_RETURN > 0
-        AND     w.RS_MOMENTUM > 0
         ORDER BY w.RS_RATING DESC LIMIT 30
     """)
 
