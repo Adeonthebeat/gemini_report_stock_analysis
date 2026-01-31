@@ -1,3 +1,71 @@
-# gemini_report_stock_analysis
+# 🚀 AdeStock: AI-Powered Momentum & Fundamental Analysis Bot
 
-🚀 AdeStock: AI-Powered Momentum & Fundamental Analysis BotAdeStock은 미국 주식 시장의 슈퍼 주도주를 포착하기 위해 기술적 지표(Relative Strength)와 재무 펀더멘털을 결합하여 분석하는 자동화 리포트 시스템입니다. 전설적인 추세추종 매매자들의 철학을 Gemini AI에 주입하여 매일 아침 심층 투자 리포트를 뉴스레터 형식으로 제공합니다.💡 Key FeaturesQuantitative Screening: 윌리엄 오닐의 CAN SLIM 원칙을 기반으로 RS(상대강도) 85~90점 이상의 주도주 후보군을 선별합니다.Legendary Persona AI: 제시 리버모어, 윌리엄 오닐, 스탠 와인스테인 등 5인의 투자 레전드 철학을 교차 검증하여 종목별 매매 전략을 제안합니다.Financial Signal System: 흑자 여부 및 성장성을 판별하여 **신호등 시스템(🟢 흑자, 🟡 성장중, 🔴 위험)**으로 리스크를 시각화합니다.Fully Automated ETL: GitHub Actions와 Prefect를 활용해 데이터 수집(yfinance), 전송(Supabase), 분석(Gemini) 과정을 완전 자동화했습니다.🛠 Tech StackLanguage: Python 3.11Database: Supabase (PostgreSQL), SQLite (Local Dev)AI Model: Google Gemini API (gemini-flash-latest)Automation: GitHub Actions, PrefectLibrary: Pandas, SQLAlchemy, yfinance, Jinja2, Google GenAI, Psycopg2🏗 System ArchitectureData Collection: yfinance를 통해 일일/주간 주가 및 분기/연간 재무제표 데이터를 수집합니다.Storage: 수집된 데이터를 클라우드 DB인 Supabase에 저장 및 관리합니다.Analysis:Quant: RS Rating, 200일 이동평균선 이격도(Deviation), ROE 등 계산.Qualitative: Gemini AI가 투자 레전드 페르소나를 통해 심층 분석 수행.Delivery: Jinja2 템플릿 기반의 HTML 뉴스레터 형식으로 변환하여 Gmail SMTP로 발송합니다.📈 Analysis Philosophy (The Dream Team)본 프로젝트는 다음 거장들의 매매 철학을 알고리즘 및 AI 프롬프트에 반영합니다:제시 리버모어: 추세 확인 후 진입 및 피라미딩(추가매수) 전략.윌리엄 오닐: RS Rating 및 EPS 성장률 기반의 주도주 발굴.스탠 와인스테인: 200일 이동평균선을 활용한 Stage 2(상승 국면) 검증.에드 세이코타 & 커티스 페이스: 철저한 추세 추종 및 리스크 관리(손절).📧 Sample Report Contents종목명티커현재가일일변동RS비고테슬라TSLA$350.5🔺 2.5%98🟢 흑자페이텀PHAT$12.4▼ 0.3%95🟡 적자(성장중)⚙️ Environment VariablesGitHub Secrets 또는 .env 파일에 다음 설정이 필요합니다:DATABASE_URL: Supabase PostgreSQL 연결 주소.GOOGLE_API_KEY: Gemini API 인증 키.EMAIL_USER / EMAIL_PASSWORD: 발신용 Gmail 계정 정보.EMAIL_RECEIVER: 리포트 수신 이메일 주소.📅 Status & Plans현재: Supabase DB 이행 완료 및 GitHub Actions 자동화 배포 성공.목표: 2026년 3월 신림 현대아파트 이사 전까지 안정적인 투자 파이프라인으로 고도화 예정.AdeStock이 성공적으로 리포트를 발송하고 있습니다. 
+**AdeStock**은 미국 주식 시장의 슈퍼 주도주를 포착하기 위해 기술적 지표(Relative Strength)와 재무 펀더멘털을 결합하여 분석하는 자동화 리포트 시스템입니다. 전설적인 추세추종 매매자들의 철학을 **Gemini AI**에 주입하여 매일 아침 심층 투자 리포트를 뉴스레터 형식으로 제공합니다.
+
+---
+
+## 💡 Key Features
+
+* **Quantitative Screening**: 윌리엄 오닐의 CAN SLIM 원칙을 기반으로 RS(상대강도) 85~90점 이상의 주도주 후보군을 선별합니다.
+* **Legendary Persona AI**: 제시 리버모어, 윌리엄 오닐, 스탠 와인스테인 등 5인의 투자 레전드 철학을 교차 검증하여 종목별 매매 전략을 제안합니다.
+* **Financial Signal System**: 흑자 여부 및 성장성을 판별하여 **신호등 시스템(🟢 흑자, 🟡 성장중, 🔴 위험)**으로 리스크를 시각화합니다.
+* **Fully Automated ETL**: GitHub Actions와 Prefect를 활용해 데이터 수집(yfinance), 전송(Supabase), 분석(Gemini) 과정을 완전 자동화했습니다.
+
+---
+
+## 🛠 Tech Stack
+
+* **Language**: Python 3.11
+* **Database**: Supabase (PostgreSQL), SQLite (Local Dev)
+* **AI Model**: Google Gemini API (`gemini-flash-latest`)
+* **Automation**: GitHub Actions, Prefect
+* **Library**: Pandas, SQLAlchemy, yfinance, Jinja2, Google GenAI, Psycopg2
+
+---
+
+## 🏗 System Architecture
+
+1.  **Data Collection**: `yfinance`를 통해 일일/주간 주가 및 분기/연간 재무제표 데이터를 수집합니다.
+2.  **Storage**: 수집된 데이터를 클라우드 DB인 **Supabase**에 저장 및 관리합니다.
+3.  **Analysis**:
+    * **Quant**: RS Rating, 200일 이동평균선 이격도(Deviation), ROE 등 계산.
+    * **Qualitative**: Gemini AI가 투자 레전드 페르소나를 통해 심층 분석 수행.
+4.  **Delivery**: **Jinja2** 템플릿 기반의 HTML 뉴스레터 형식으로 변환하여 Gmail SMTP로 발송합니다.
+
+---
+
+## 📈 Analysis Philosophy (The Dream Team)
+
+본 프로젝트는 다음 거장들의 매매 철학을 알고리즘 및 AI 프롬프트에 반영합니다:
+
+* **제시 리버모어**: 추세 확인 후 진입 및 피라미딩(추가매수) 전략.
+* **윌리엄 오닐**: RS Rating 및 EPS 성장률 기반의 주도주 발굴.
+* **스탠 와인스테인**: 200일 이동평균선을 활용한 Stage 2(상승 국면) 검증.
+* **에드 세이코타 & 커티스 페이스**: 철저한 추세 추종 및 리스크 관리(손절).
+
+---
+
+## 📧 Sample Report Contents
+
+| 종목명 | 티커 | 현재가 | 일일변동 | RS | 비고 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 테슬라 | TSLA | $350.5 | 🔺 2.5% | 98 | 🟢 흑자 |
+| 페이텀 | PHAT | $12.4 | ▼ 0.3% | 95 | 🟡 적자(성장중) |
+
+---
+
+## ⚙️ Environment Variables
+
+GitHub Secrets 또는 `.env` 파일에 다음 설정이 필요합니다:
+
+* `DATABASE_URL`: Supabase PostgreSQL 연결 주소.
+* `GOOGLE_API_KEY`: Gemini API 인증 키.
+* `EMAIL_USER` / `EMAIL_PASSWORD`: 발신용 Gmail 계정 정보.
+* `EMAIL_RECEIVER`: 리포트 수신 이메일 주소.
+
+---
+
+## 📅 Status & Plans
+
+* **현재**: Supabase DB 이행 완료 및 GitHub Actions 자동화 배포 성공.
+* **목표**: 2026년 3월까지 안정적인 투자 파이프라인으로 고도화 예정.
