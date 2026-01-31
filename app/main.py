@@ -25,6 +25,7 @@ def stock_analysis_pipeline():
     # 2. 업데이트 필요 여부 확인
     if check_market_data_update('VTI'):
         logger.info("이미 최신 데이터가 존재합니다. 작업을 건너뜁니다.")
+        generate_ai_report()
         return
 
     # 3. 대상 티커 조회
