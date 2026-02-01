@@ -20,7 +20,6 @@ def classify_status(row):
     """
     재무 데이터를 기반으로 신호등 이모지 반환
     """
-    # None 값은 0으로 처리
     net_income = row.get('net_income') or 0
     rev_growth = row.get('rev_growth_yoy') or 0
     eps_growth = row.get('eps_growth_yoy') or 0
@@ -48,9 +47,9 @@ def generate_ai_report():
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
     # ---------------------------------------------------------
-    # [SQL] 윌리엄 오닐 스타일 데이터 추출
+    # [SQL] 4대 전설(오닐, 리버모어, 세이코타, 와인스테인) 데이터 추출
     # ---------------------------------------------------------
-    # 조건: RS 80 이상, 주가 200일선 위(와인스테인), ETF 제외(STOCK만)
+    # 조건: RS 80 이상, 주가 200일선 위(와인스테인 필수 조건), ETF 제외
     query = text("""
         SELECT  m.name
         ,       w.ticker
@@ -81,9 +80,9 @@ def generate_ai_report():
             ON  w.ticker = fa.ticker
             AND fa.year = (SELECT MAX(year) FROM financial_annual WHERE ticker = w.ticker)
         WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-        AND     m.market_type = 'STOCK'   -- [중요] 오닐은 개별 기업을 분석함 (ETF 제외)
-        AND     w.rs_rating >= 80         -- [오닐] 강력한 주도주 조건
-        AND     w.is_above_200ma = 1      -- [와인스테인] 2단계 상승 국면
+        AND     m.market_type = 'STOCK'   -- [중요] 개별 기업 분석
+        AND     w.rs_rating >= 80         -- [오닐] 강력한 주도주
+        AND     w.is_above_200ma = 1      -- [와인스테인] 2단계 상승 국면의 필수 전제 (200일선 위)
         ORDER BY w.rs_rating DESC LIMIT 20;
     """)
 
@@ -104,70 +103,71 @@ def generate_ai_report():
         lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-")
     )
 
-    # 200일선 상태 표시 (이격도가 너무 크면 경고)
-    def format_200ma(row):
+    # 와인스테인 2단계 확인용 (이격도 표시)
+    def format_weinstein_status(row):
         dev = row['deviation_200ma']
-        if dev >= 50: return f"과열(이격 {dev}%)"  # 리버모어/세이코타는 과열 주의
-        return f"안정(이격 {dev}%)"
+        # 이격도가 0보다 크면 200일선 위에 있는 것 (SQL에서 이미 필터링함)
+        if dev >= 50: return f"과열(이격 {dev}%)"
+        if dev >= 0: return f"2단계 유지(이격 {dev}%)"
+        return "이탈(경고)"
 
-    df['이격도상태'] = df.apply(format_200ma, axis=1)
+    df['추세상태'] = df.apply(format_weinstein_status, axis=1)
 
-    # AI에게 보낼 컬럼만 선택
+    # AI에게 보낼 컬럼 선택
     display_df = df[[
         'ticker', 'name', 'today_close', '오늘변동', 'rs_rating',
-        'fundamental_grade', '이격도상태', '비고'
+        'fundamental_grade', '추세상태', '비고'
     ]]
 
     # Markdown 변환
     data_table = display_df.to_markdown(index=False)
 
     # ---------------------------------------------------------
-    # [Prompt] 레전드 페르소나 (오닐 + 리버모어 + 세이코타)
+    # [Prompt] 레전드 4인방 (오닐 + 리버모어 + 세이코타 + 와인스테인)
     # ---------------------------------------------------------
     prompt = f"""
-    # Role: 전설적인 트레이딩 멘토 (Trend Following Expert)
+    # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
 
     # Persona & Tone:
     - 당신은 나의 오랜 투자 멘토입니다. 친근하게 "친구야"라고 부르며 대화하듯 설명해 주세요.
-    - 하지만 **'자금 관리'와 '손절'**에 대해서는 **에드 세이코타**처럼 냉정하고 단호해야 합니다.
-    - 상승 추세에는 **제시 리버모어**처럼 대담한 진입을 권하되, 하락 반전 신호에는 민감하게 반응하세요.
+    - 분석은 논리적이어야 하지만, **'리스크 관리'**에 대해서는 냉정하고 단호해야 합니다.
 
-    # 🧠 Your Investment Philosophy (The Big Three):
-    답변을 작성할 때 다음 세 명의 철학을 반드시 교차 검증하여 분석하세요.
+    # 🧠 Your Advisory Board (The Big Four Philosophies):
+    답변을 작성할 때 다음 4명의 철학을 완벽하게 통합하여 분석하세요.
 
-    1. **🔍 종목 선정 (William O'Neil):** - 펀더멘털(이익 성장)과 수급(RS)이 모두 받쳐주는 '주도주'인가?
-       - "RS Rating이 높고(80 이상), 펀더멘털 등급이 좋은 종목에 집중해라."
+    1. **🔍 윌리엄 오닐 (William O'Neil):** - "펀더멘털(이익 성장)과 수급(RS)이 모두 받쳐주는 '주도주'인가?" (RS 80 이상, 흑자 선호)
 
-    2. **⏱️ 매매 타이밍 (Jesse Livermore):**
-       - 단순히 싸다고 사지 마라. **'피봇 포인트'를 돌파**하며 새로운 추세가 시작될 때가 매수 시점이다.
-       - "달리는 말에 올라타라(Breakout Buy). 수익이 나면 불타기(Pyramiding)를 고려해라."
+    2. **📈 스탠 와인스테인 (Stan Weinstein):** - "주식이 **'2단계 상승 국면(Stage 2)'**에 있는가?"
+       - **절대 원칙:** 30주(200일) 이동평균선 위에 있어야 하며, 주가가 이동평균선을 깨지 않고 타고 올라가야 한다.
 
-    3. **🛡️ 청산 및 리스크 관리 (Ed Seykota):**
-       - 예측하지 말고 대응해라. "추세는 친구다(Trend is your friend)."
-       - 추세가 꺾이면(200일선 이탈 등) 즉시 손절해라. **감정을 배제하고 기계적으로 청산해라.**
+    3. **⏱️ 제시 리버모어 (Jesse Livermore):**
+       - "단순히 싸다고 사지 마라. **'피봇 포인트'를 돌파**하며 새로운 추세가 시작될 때가 매수 시점이다."
+
+    4. **🛡️ 에드 세이코타 (Ed Seykota):**
+       - "추세는 친구다(Trend is your friend)." 하지만 추세가 꺾이면(200일선 이탈 등) 즉시 자라라. 예측하지 말고 대응해라.
 
     # 📊 Market Data (Top 20 Strongest Stocks):
     {data_table}
-    * '비고' 컬럼: 🟢(흑자/성장-안전), 🟡(적자성장-변동성 주의), 🔴(위험)
-    * '이격도상태': 200일선과의 거리. 50% 이상이면 단기 과열 가능성 있음.
+    * '추세상태': 스탠 와인스테인의 2단계 확인용 (200일선 위인지, 이격도가 적당한지).
+    * '비고': 🟢(흑자/성장-안전), 🟡(적자성장-변동성 주의), 🔴(위험)
 
     ---
     # 📝 Report Request:
 
-    ## 1. 🌍 시장 브리핑 (Trend Check)
-    - 상위 종목들의 전반적인 분위기를 보고, 지금이 공격적으로 매수할 때인지 관망할 때인지 **세이코타의 관점**에서 한마디 해주세요.
+    ## 1. 🌍 시장 추세 브리핑 (Weinstein's Stage Analysis)
+    - 상위 종목들이 대체로 **'2단계 상승 국면'**에 안착해 있는지, 아니면 과열(3단계)이나 하락(4단계) 징후가 보이는지 **스탠 와인스테인의 관점**에서 분석해 주세요. 
 
     ## 2. 🚀 오늘의 Top Pick (3개 선정)
-    - 위 리스트 중 **오닐의 기준(펀더멘털+수급)**과 **리버모어의 기준(돌파 가능성)**을 모두 충족하는 최고의 종목 3개를 선정해 주세요.
-    - **[선정 이유]**: "이 종목은 RS가 XX로 수급이 강하고, 흑자 구조(🟢)라 오닐이 좋아할 만해."
-    - **[진입 전략]**: "현재 가격이 OO불인데, 전고점을 돌파할 때가 리버모어의 매수 타점이야." (구체적 가격 언급)
+    - **오닐(수급/실적)**이 좋아하고, **와인스테인(2단계 지속)**이 확인되며, **리버모어(돌파)**의 타점이 보이는 최고의 종목 3개를 선정해 주세요.
+    - **[선정 이유]**: "이 종목은 RS가 강하고, 200일선 위에서 2단계 상승을 지속 중이야(와인스테인). 실적도 🟢라 오닐 합격점이지."
+    - **[진입 전략]**: 리버모어의 관점에서 '돌파 매수' 혹은 '눌림목 매수' 가격대를 제안해 주세요.
 
-    ## 3. ⚠️ 리스크 경고 (Risk Management)
-    - **세이코타의 목소리**로 경고해 주세요.
-    - 이격도가 너무 높거나(과열), 재무 상태가 🔴(위험)인 종목이 있다면, "이건 도박이야. 추세가 꺾이면 바로 나와야 해"라고 따끔하게 말해주세요.
+    ## 3. ⚠️ 리스크 경고 (Seykota's Cut)
+    - **에드 세이코타의 목소리**로 경고해 주세요.
+    - 이격도가 지나치게 높거나(과열), 펀더멘털이 🔴인데 기대감만으로 오른 종목이 있다면 "추세가 꺾이면 뒤도 돌아보지 말고 나와야 해"라고 따끔하게 말해주세요.
 
-    ## 4. 💡 멘토의 격려
-    - 뇌동매매를 참는 것도 실력입니다. 마인드셋을 위한 짧은 명언이나 조언을 남겨주세요.
+    ## 4. 💡 멘토의 한마디
+    - 투자 심리를 다잡을 수 있는 짧은 격려의 말을 남겨주세요.
     """
 
     try:
@@ -182,7 +182,7 @@ def generate_ai_report():
 
         # 이메일 발송
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        email_subject = f"📈 [Trend Report] {yesterday} 주도주 분석 (with O'Neil & Livermore)"
+        email_subject = f"📈 [Trend Report] {yesterday} 주도주 분석 (with 4 Legends)"
 
         send_email(email_subject, report_content, yesterday)
 
@@ -190,9 +190,7 @@ def generate_ai_report():
         logger.error(f"Gemini 분석 및 리포트 생성 실패: {e}")
 
 
-# ---------------------------------------------------------
-# [Email] 이메일 발송 함수
-# ---------------------------------------------------------
+# ... (send_email 함수 및 하단 실행 코드는 기존과 동일 유지) ...
 def send_email(subject, markdown_content, report_date):
     EMAIL_USER = os.getenv("EMAIL_USER")
     EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
@@ -208,13 +206,11 @@ def send_email(subject, markdown_content, report_date):
 
         # HTML 템플릿 로드
         template_dir = os.path.join(BASE_DIR, "app", "templates")
-        # 템플릿 파일이 없으면 기본 문자열 템플릿 사용
         try:
             env = Environment(loader=FileSystemLoader(template_dir))
             template = env.get_template('newsletter.html')
             final_html = template.render(date=report_date, body_content=html_body)
         except Exception:
-            # 템플릿 파일이 없을 경우 대비한 심플 HTML
             final_html = f"""
             <html>
             <head>
@@ -223,14 +219,11 @@ def send_email(subject, markdown_content, report_date):
                     table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
                     th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
                     th {{ background-color: #f2f2f2; }}
-                    h1, h2 {{ color: #2c3e50; }}
-                    .footer {{ margin-top: 30px; font-size: 0.8em; color: #777; }}
                 </style>
             </head>
             <body>
                 <h2>{subject}</h2>
                 <div>{html_body}</div>
-                <div class="footer">본 메일은 AI 자동 분석 리포트입니다. 투자의 책임은 본인에게 있습니다.</div>
             </body>
             </html>
             """
@@ -252,9 +245,8 @@ def send_email(subject, markdown_content, report_date):
         print(f"❌ 이메일 발송 실패: {e}")
 
 
-# 로컬 테스트용
 if __name__ == "__main__":
     from dotenv import load_dotenv
 
-    load_dotenv()  # .env 파일 로드
+    load_dotenv()
     generate_ai_report()
