@@ -30,14 +30,32 @@ def check_market_data_update(benchmark='VTI'):
     return False
 
 
-def fetch_combined_data(ticker, benchmark='VTI'):
+def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=500)
+    # 200일선 등 계산을 위해 넉넉히 2년치
+    start_date = end_date - timedelta(days=730)
 
-    df = yf.download([ticker, benchmark], start=start_date, end=end_date,
-                     interval='1d', auto_adjust=False, progress=False)
+    print(f"📥 {ticker} ({market_type}) vs {benchmark} 데이터 수집 중...")
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+    try:
+        # 1. 티커와 벤치마크 같이 다운로드
+        df = yf.download([ticker, benchmark], start=start_date, end=end_date,
+                         interval='1d', auto_adjust=True, progress=False)
 
-    return df.dropna()
+        if df.empty:
+            return pd.DataFrame()
+
+        # 2. [중요] MultiIndex 컬럼 평탄화 (Price, Ticker) -> Price_Ticker
+        # 예: ('Close', 'AAPL') -> 'Close_AAPL'
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [f'{col[0]}_{col[1]}' for col in df.columns]
+        else:
+            # 티커가 하나만 요청되었거나 구조가 다를 경우 포맷 통일
+            # (이 로직을 타면 calculate_metrics에서 Close_VTI를 못 찾아 에러날 수 있으므로 주의)
+            df.columns = [f'{col}_{ticker}' for col in df.columns]
+
+        return df.dropna()
+
+    except Exception as e:
+        print(f"❌ {ticker} 데이터 수집 실패: {e}")
+        return pd.DataFrame()

@@ -13,10 +13,3 @@ def get_engine():
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         return create_engine(url)
-
-    # B. 없으면? (내 컴퓨터 테스트 환경) -> 그냥 파일(SQLite) 사용
-    else:
-        # data 폴더가 없으면 에러 날 수 있으니 만들어줍니다.
-        db_path = os.path.join(BASE_DIR, "data", "my_stock_data.db")
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        return create_engine(f"sqlite:///{db_path}")

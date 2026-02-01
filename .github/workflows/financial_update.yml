@@ -1,0 +1,42 @@
+name: Manual Financial Update
+
+# ✋ 수동으로 버튼 누를 때만 실행됩니다 (workflow_dispatch)
+# 원하시면 schedule을 추가해서 주말에만 돌게 할 수도 있습니다.
+on:
+  workflow_dispatch:
+
+jobs:
+  financial-update:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. 코드 내려받기
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 2. 파이썬 3.11 세팅
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. 라이브러리 설치 (메인과 동일)
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas yfinance google-genai sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary
+
+    # 4. 재무제표 수집 스크립트 실행 🚀
+    - name: Run Financial Collector
+      env:
+        # DB 연결 정보 필수!
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # (혹시 코드 내부에서 설정을 불러올 때 필요할 수 있어 다른 키들도 넣어둡니다)
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+
+      # 아까 __name__ == "__main__" 추가한 파일 실행
+      run: |
+        python -m app.services.financial_collector
