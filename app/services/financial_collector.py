@@ -89,6 +89,7 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
             """), rows_to_insert)
         logger.info(f"   └ 📦 {ticker}: 분기 실적(EPS포함) {len(rows_to_insert)}건 동기화")
 
+
 # ---------------------------------------------------------
 # [Core] 연간 실적 처리
 # ---------------------------------------------------------
