@@ -7,7 +7,7 @@ from app.core.database import get_engine
 
 
 # ---------------------------------------------------------
-# [Core] 분기 실적 처리 (날짜 제한 없이 무조건 Upsert)
+# [Core] 분기 실적 처리
 # ---------------------------------------------------------
 def process_quarterly_data(engine, ticker, stock_obj, logger):
     try:
@@ -19,48 +19,72 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
     df = fin.T
     df.index = pd.to_datetime(df.index)
 
+    # 1. 데이터 추출 (EPS 추가!)
+    # yfinance 키: 'Basic EPS', 'Diluted EPS' 등이 있음
+    # 없으면 None 처리
     net_income = df.get('Net Income', pd.Series(dtype=float))
     revenue = df.get('Total Revenue', pd.Series(dtype=float))
+    eps_basic = df.get('Basic EPS', pd.Series(dtype=float))  # [NEW] 진짜 EPS
 
+    # 2. 성장률 계산 (YoY)
     rev_growth = revenue.pct_change(periods=4, fill_method=None) * 100
-    ni_growth = net_income.pct_change(periods=4, fill_method=None) * 100
+
+    # [변경] 순이익 성장률 대신 '진짜 EPS 성장률' 계산
+    # EPS 데이터가 있으면 그걸로 계산, 없으면 순이익으로 대체(Fallback)
+    if not eps_basic.empty and not eps_basic.isna().all():
+        real_eps_growth = eps_basic.pct_change(periods=4, fill_method=None) * 100
+    else:
+        real_eps_growth = net_income.pct_change(periods=4, fill_method=None) * 100
 
     rows_to_insert = []
 
     for date_idx, row in df.iterrows():
         current_date = date_idx.date()
+
         val_revenue = revenue.get(date_idx)
         val_net_income = net_income.get(date_idx)
+        val_eps = eps_basic.get(date_idx)  # [NEW] EPS 값
 
+        # 유효성 검사
         if pd.isna(val_revenue) or val_revenue == 0: continue
-        if pd.isna(val_net_income): continue
+        # EPS나 순이익 중 하나라도 있으면 저장 시도
+        if pd.isna(val_net_income) and pd.isna(val_eps): continue
 
         data = {
             "ticker": ticker,
             "date": current_date,
-            "net_income": int(val_net_income),
+            "net_income": int(val_net_income) if not pd.isna(val_net_income) else None,
             "revenue": int(val_revenue),
+            "eps_basic": float(val_eps) if not pd.isna(val_eps) else None,  # [NEW]
             "rev_growth_yoy": None if pd.isna(rev_growth.get(date_idx)) else round(float(rev_growth.get(date_idx)), 2),
-            "eps_growth_yoy": None if pd.isna(ni_growth.get(date_idx)) else round(float(ni_growth.get(date_idx)), 2)
+            "eps_growth_yoy": None if pd.isna(real_eps_growth.get(date_idx)) else round(
+                float(real_eps_growth.get(date_idx)), 2)
         }
         rows_to_insert.append(data)
 
     if rows_to_insert:
         with engine.begin() as conn:
             conn.execute(text("""
-                INSERT INTO financial_quarterly (ticker, date, net_income, revenue, rev_growth_yoy, eps_growth_yoy)
-                VALUES (:ticker, :date, :net_income, :revenue, :rev_growth_yoy, :eps_growth_yoy)
+                INSERT INTO financial_quarterly (
+                    ticker, date, net_income, revenue, eps_basic, 
+                    rev_growth_yoy, eps_growth_yoy
+                )
+                VALUES (
+                    :ticker, :date, :net_income, :revenue, :eps_basic, 
+                    :rev_growth_yoy, :eps_growth_yoy
+                )
                 ON CONFLICT (ticker, date) DO UPDATE SET
                     net_income = EXCLUDED.net_income,
                     revenue = EXCLUDED.revenue,
+                    eps_basic = EXCLUDED.eps_basic,
                     rev_growth_yoy = EXCLUDED.rev_growth_yoy,
                     eps_growth_yoy = EXCLUDED.eps_growth_yoy
             """), rows_to_insert)
-        logger.info(f"   └ 📦 {ticker}: 분기 실적 {len(rows_to_insert)}건 동기화")
+        logger.info(f"   └ 📦 {ticker}: 분기 실적(EPS포함) {len(rows_to_insert)}건 동기화")
 
 
 # ---------------------------------------------------------
-# [Core] 연간 실적 처리 (ROE용)
+# [Core] 연간 실적 처리
 # ---------------------------------------------------------
 def process_annual_data(engine, ticker, stock_obj, logger):
     try:
@@ -78,6 +102,7 @@ def process_annual_data(engine, ticker, stock_obj, logger):
     net_income = merged.get('Net Income', pd.Series(dtype=float))
     equity = merged.get('Stockholders Equity', pd.Series(dtype=float))
     revenue = merged.get('Total Revenue', pd.Series(dtype=float))
+    eps_basic = merged.get('Basic EPS', pd.Series(dtype=float))  # [NEW]
 
     roe_series = (net_income / equity) * 100
 
@@ -87,14 +112,16 @@ def process_annual_data(engine, ticker, stock_obj, logger):
         current_year = date_idx.year
         val_revenue = revenue.get(date_idx)
         val_net_income = net_income.get(date_idx)
+        val_eps = eps_basic.get(date_idx)  # [NEW]
 
         if pd.isna(val_revenue) or val_revenue == 0: continue
 
         data = {
             "ticker": ticker,
             "year": current_year,
-            "net_income": None if pd.isna(val_net_income) else int(val_net_income),
-            "revenue": None if pd.isna(val_revenue) else int(val_revenue),
+            "net_income": int(val_net_income) if not pd.isna(val_net_income) else None,
+            "revenue": int(val_revenue),
+            "eps_basic": float(val_eps) if not pd.isna(val_eps) else None,  # [NEW]
             "roe": None if pd.isna(roe_series.get(date_idx)) else round(float(roe_series.get(date_idx)), 2)
         }
         rows_to_insert.append(data)
@@ -102,34 +129,32 @@ def process_annual_data(engine, ticker, stock_obj, logger):
     if rows_to_insert:
         with engine.begin() as conn:
             conn.execute(text("""
-                INSERT INTO financial_annual (ticker, year, net_income, revenue, roe)
-                VALUES (:ticker, :year, :net_income, :revenue, :roe)
+                INSERT INTO financial_annual (ticker, year, net_income, revenue, eps_basic, roe)
+                VALUES (:ticker, :year, :net_income, :revenue, :eps_basic, :roe)
                 ON CONFLICT (ticker, year) DO UPDATE SET
                     net_income = EXCLUDED.net_income,
                     revenue = EXCLUDED.revenue,
+                    eps_basic = EXCLUDED.eps_basic,
                     roe = EXCLUDED.roe
             """), rows_to_insert)
-        logger.info(f"   └ 📅 {ticker}: 연간 실적(ROE) {len(rows_to_insert)}건 동기화")
+        logger.info(f"   └ 📅 {ticker}: 연간 실적(ROE+EPS) {len(rows_to_insert)}건 동기화")
 
 
 # ---------------------------------------------------------
-# [New] Stock Fundamentals (등급 산정) 처리
+# [New] Stock Fundamentals (등급 산정 + 지표 저장)
 # ---------------------------------------------------------
 def process_stock_fundamentals(engine, ticker, logger):
-    """
-    수집된 Quarterly, Annual 데이터를 바탕으로 점수(Grade)를 매겨 stock_fundamentals에 저장
-    """
     with engine.connect() as conn:
-        # 1. 최신 분기 성장률 가져오기 (가장 최근 날짜 1개)
+        # [수정] 이제 eps_basic 컬럼도 가져올 수 있지만,
+        # 점수 계산에는 이미 계산된 'eps_growth_yoy'를 쓰면 됩니다.
         q_query = text("""
-            SELECT date, eps_growth_yoy, rev_growth_yoy 
+            SELECT date, eps_growth_yoy, rev_growth_yoy, eps_basic 
             FROM financial_quarterly 
             WHERE ticker = :ticker 
             ORDER BY date DESC LIMIT 1
         """)
         q_data = conn.execute(q_query, {"ticker": ticker}).fetchone()
 
-        # 2. 최신 연간 ROE 가져오기 (가장 최근 연도 1개)
         a_query = text("""
             SELECT roe 
             FROM financial_annual 
@@ -138,26 +163,23 @@ def process_stock_fundamentals(engine, ticker, logger):
         """)
         a_data = conn.execute(a_query, {"ticker": ticker}).fetchone()
 
-    # 데이터가 없으면 계산 불가 -> 종료
     if not q_data:
         return
 
-    # 3. 점수 계산 (자체 알고리즘)
-    # - EPS 성장률: 높을수록 좋음 (30% 이상이면 만점)
-    # - ROE: 높을수록 좋음 (17% 이상이면 만점)
-    eps_growth = q_data.eps_growth_yoy or 0
-    roe = a_data.roe if a_data else 0
+    # 상세 지표 (DB 저장용)
+    raw_eps_growth = q_data.eps_growth_yoy
+    raw_rev_growth = q_data.rev_growth_yoy
+    raw_roe = a_data.roe if a_data else None
 
-    # [점수 산정 로직]
-    # 성장률 점수 (최대 60점): 성장률 1%당 2점 (30% 성장 시 60점)
-    growth_score = min(max(eps_growth * 2, 0), 60)
+    # 점수 계산용 (None -> 0)
+    calc_eps_growth = raw_eps_growth if raw_eps_growth is not None else 0.0
+    calc_roe = raw_roe if raw_roe is not None else 0.0
 
-    # ROE 점수 (최대 40점): ROE 1%당 2.35점 (17% ROE 시 약 40점)
-    roe_score = min(max(roe * 2.35, 0), 40)
-
+    # [점수 알고리즘]
+    growth_score = min(max(calc_eps_growth * 2, 0), 60)
+    roe_score = min(max(calc_roe * 2.35, 0), 40)
     total_score = round(growth_score + roe_score, 1)
 
-    # 4. 등급 부여 (Fundamental Grade)
     if total_score >= 80:
         grade = 'A'
     elif total_score >= 60:
@@ -169,25 +191,36 @@ def process_stock_fundamentals(engine, ticker, logger):
     else:
         grade = 'E'
 
-    # 5. DB Upsert
     with engine.begin() as conn:
         conn.execute(text("""
-            INSERT INTO stock_fundamentals (ticker, latest_q_date, fundamental_grade, eps_rating, updated_at)
-            VALUES (:ticker, :latest_q_date, :grade, :score, :updated_at)
+            INSERT INTO stock_fundamentals (
+                ticker, latest_q_date, fundamental_grade, eps_rating, 
+                eps_growth, rev_growth, roe, updated_at
+            )
+            VALUES (
+                :ticker, :latest_q_date, :grade, :score, 
+                :eps_growth, :rev_growth, :roe, :updated_at
+            )
             ON CONFLICT (ticker) DO UPDATE SET
                 latest_q_date = EXCLUDED.latest_q_date,
                 fundamental_grade = EXCLUDED.fundamental_grade,
                 eps_rating = EXCLUDED.eps_rating,
+                eps_growth = EXCLUDED.eps_growth,
+                rev_growth = EXCLUDED.rev_growth,
+                roe = EXCLUDED.roe,
                 updated_at = EXCLUDED.updated_at
         """), {
             "ticker": ticker,
             "latest_q_date": q_data.date,
             "grade": grade,
             "score": total_score,
+            "eps_growth": raw_eps_growth,
+            "rev_growth": raw_rev_growth,
+            "roe": raw_roe,
             "updated_at": datetime.now()
         })
 
-    logger.info(f"   └ 🏆 {ticker}: 펀더멘털 등급 산정 완료 (등급: {grade}, 점수: {total_score})")
+    logger.info(f"   └ 🏆 {ticker}: 등급 {grade} ({total_score}점) | EPS성장 {raw_eps_growth}% (Real EPS)")
 
 
 # ---------------------------------------------------------
@@ -202,19 +235,14 @@ def fetch_and_save_financials():
         query = text("SELECT ticker FROM stock_master WHERE market_type = 'STOCK'")
         tickers = [row.ticker for row in conn.execute(query).fetchall()]
 
-    logger.info(f"💰 재무제표 및 펀더멘털 분석 시작: 총 {len(tickers)}개 종목")
+    logger.info(f"💰 재무제표 수집 시작: 총 {len(tickers)}개 종목")
 
     for ticker in tickers:
         try:
             stock = yf.Ticker(ticker)
-
-            # 1. 기초 데이터 수집 (Upsert)
             process_quarterly_data(engine, ticker, stock, logger)
             process_annual_data(engine, ticker, stock, logger)
-
-            # 2. [NEW] 수집된 데이터로 등급 산정 (Aggregate)
             process_stock_fundamentals(engine, ticker, logger)
-
         except Exception as e:
             logger.error(f"❌ {ticker} 처리 실패: {e}")
 
