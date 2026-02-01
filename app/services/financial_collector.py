@@ -7,7 +7,7 @@ from app.core.database import get_engine
 
 
 # ---------------------------------------------------------
-# [Core] 분기 실적 처리
+# [Core] 분기 실적 처리 (정렬 로직 추가)
 # ---------------------------------------------------------
 def process_quarterly_data(engine, ticker, stock_obj, logger):
     try:
@@ -19,18 +19,19 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
     df = fin.T
     df.index = pd.to_datetime(df.index)
 
-    # 1. 데이터 추출 (EPS 추가!)
-    # yfinance 키: 'Basic EPS', 'Diluted EPS' 등이 있음
-    # 없으면 None 처리
+    # [핵심 수정 1] 날짜 오름차순(과거->현재) 정렬
+    # 이게 없으면 pct_change가 엉뚱하게 계산됩니다.
+    df = df.sort_index(ascending=True)
+
+    # 1. 데이터 추출
     net_income = df.get('Net Income', pd.Series(dtype=float))
     revenue = df.get('Total Revenue', pd.Series(dtype=float))
-    eps_basic = df.get('Basic EPS', pd.Series(dtype=float))  # [NEW] 진짜 EPS
+    eps_basic = df.get('Basic EPS', pd.Series(dtype=float))
 
-    # 2. 성장률 계산 (YoY)
+    # 2. 성장률 계산 (YoY) - 이제 정렬되었으므로 정상 작동
+    # 데이터가 5개 미만이면 앞쪽은 어쩔 수 없이 NaN이 뜹니다.
     rev_growth = revenue.pct_change(periods=4, fill_method=None) * 100
 
-    # [변경] 순이익 성장률 대신 '진짜 EPS 성장률' 계산
-    # EPS 데이터가 있으면 그걸로 계산, 없으면 순이익으로 대체(Fallback)
     if not eps_basic.empty and not eps_basic.isna().all():
         real_eps_growth = eps_basic.pct_change(periods=4, fill_method=None) * 100
     else:
@@ -38,27 +39,33 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
 
     rows_to_insert = []
 
+    # 다시 최신순으로 돌면서 저장 (선택 사항이나 디버깅 편의상)
+    # iterrows는 순서대로 나오므로 위에서 오름차순 정렬된 상태로 돕니다.
     for date_idx, row in df.iterrows():
         current_date = date_idx.date()
 
         val_revenue = revenue.get(date_idx)
         val_net_income = net_income.get(date_idx)
-        val_eps = eps_basic.get(date_idx)  # [NEW] EPS 값
+        val_eps = eps_basic.get(date_idx)
 
         # 유효성 검사
         if pd.isna(val_revenue) or val_revenue == 0: continue
-        # EPS나 순이익 중 하나라도 있으면 저장 시도
         if pd.isna(val_net_income) and pd.isna(val_eps): continue
+
+        # [핵심 수정 2] 성장률이 NaN인 경우(데이터 부족) None으로 명확히 처리
+        r_growth_val = rev_growth.get(date_idx)
+        e_growth_val = real_eps_growth.get(date_idx)
 
         data = {
             "ticker": ticker,
             "date": current_date,
             "net_income": int(val_net_income) if not pd.isna(val_net_income) else None,
             "revenue": int(val_revenue),
-            "eps_basic": float(val_eps) if not pd.isna(val_eps) else None,  # [NEW]
-            "rev_growth_yoy": None if pd.isna(rev_growth.get(date_idx)) else round(float(rev_growth.get(date_idx)), 2),
-            "eps_growth_yoy": None if pd.isna(real_eps_growth.get(date_idx)) else round(
-                float(real_eps_growth.get(date_idx)), 2)
+            "eps_basic": float(val_eps) if not pd.isna(val_eps) else None,
+
+            # NaN 체크를 확실하게 해서 넣음
+            "rev_growth_yoy": round(float(r_growth_val), 2) if pd.notna(r_growth_val) else None,
+            "eps_growth_yoy": round(float(e_growth_val), 2) if pd.notna(e_growth_val) else None
         }
         rows_to_insert.append(data)
 
@@ -81,7 +88,6 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
                     eps_growth_yoy = EXCLUDED.eps_growth_yoy
             """), rows_to_insert)
         logger.info(f"   └ 📦 {ticker}: 분기 실적(EPS포함) {len(rows_to_insert)}건 동기화")
-
 
 # ---------------------------------------------------------
 # [Core] 연간 실적 처리
