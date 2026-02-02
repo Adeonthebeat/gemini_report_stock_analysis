@@ -1,0 +1,30 @@
+name: Manual History Gap Fill
+
+# ✋ 수동 실행 전용 (누락된 종목만 채우기)
+on:
+  workflow_dispatch:
+
+jobs:
+  gap-fill-data:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas yfinance sqlalchemy prefect psycopg2-binary tabulate python-dotenv
+
+    # 새로 만든 gap filler 스크립트 실행
+    - name: Run Gap Filler
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      run: |
+        python -m app.services.history_gap_filler
