@@ -11,13 +11,18 @@ def gap_fill_stock_prices(period="1y"):
     """
     [Gap Fill 모드]
     price_daily 테이블에 데이터가 '없는' 종목만 골라서 과거 데이터를 수집합니다.
+    (단, SECTOR와 INDEX 타입은 수집 대상에서 제외)
     """
     logger = get_run_logger()
     engine = get_engine()
 
     with engine.connect() as conn:
-        # 1. 전체 종목 리스트 (Master)
-        master_query = text("SELECT ticker FROM stock_master")
+        # 1. 전체 종목 리스트 (Master) - [수정됨] SECTOR, INDEX 제외 조건 추가
+        master_query = text("""
+            SELECT ticker 
+            FROM stock_master 
+            WHERE market_type NOT IN ('SECTOR', 'INDEX')
+        """)
         all_tickers = {row.ticker for row in conn.execute(master_query).fetchall()}  # 집합(Set)으로 변환
 
         # 2. 이미 수집된 종목 리스트 (Price Daily)
@@ -29,7 +34,7 @@ def gap_fill_stock_prices(period="1y"):
     target_tickers = list(all_tickers - existing_tickers)
 
     if not target_tickers:
-        logger.info("✨ 모든 종목의 데이터가 이미 존재합니다. 작업을 종료합니다.")
+        logger.info("✨ 모든 주식(STOCK) 데이터가 이미 존재합니다. 작업을 종료합니다.")
         return
 
     logger.info(f"🧩 누락 데이터 채우기 시작: 총 {len(target_tickers)}개 종목 대상 (기간: {period})")
