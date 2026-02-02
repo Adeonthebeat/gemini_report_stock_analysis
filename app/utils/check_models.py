@@ -20,3 +20,7 @@ def checkModels():
 
         except Exception as e:
             print(f"목록 조회 실패: {e}")
+
+
+if __name__ == "__main__":
+    checkModels()
