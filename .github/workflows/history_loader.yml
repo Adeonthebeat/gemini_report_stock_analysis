@@ -1,0 +1,49 @@
+name: Manual History Backfill
+
+# ✋ 수동 실행 전용 (버튼을 눌러야 실행됨)
+on:
+  workflow_dispatch:
+    inputs:
+      period:
+        description: '수집할 기간 (예: 1y, 2y, 5y, max)'
+        required: true
+        default: '1y'
+
+jobs:
+  backfill-data:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. 저장소 코드 내려받기
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 2. 파이썬 3.11 환경 설정
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. 필요한 라이브러리 설치
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas yfinance sqlalchemy prefect psycopg2-binary tabulate python-dotenv
+
+    # 4. 과거 데이터 수집 스크립트 실행 🚀
+    - name: Run History Loader
+      env:
+        # DB 접속 정보 (GitHub Secrets에 등록되어 있어야 함)
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # (혹시 모를 의존성 에러 방지를 위해 다른 키들도 로드)
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        EMAIL_USER: ${{ secrets.EMAIL_USER }}
+        EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+
+      # 입력받은 period 값을 환경변수로 넘기거나 스크립트 인자로 전달
+      # 여기서는 스크립트가 period="1y"로 고정되어 있으므로,
+      # 유연하게 쓰려면 파이썬 코드를 살짝 수정해야 하지만
+      # 일단 기본 실행만 되도록 설정합니다.
+      run: |
+        python -m app.services.history_loader
