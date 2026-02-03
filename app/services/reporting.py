@@ -247,8 +247,9 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
+        # [수정 후] 1.5 버전 사용
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-1.5-flash', 
             contents=prompt
         )
         report_content = response.text
