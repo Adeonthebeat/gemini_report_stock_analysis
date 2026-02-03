@@ -5,6 +5,7 @@ from email.mime.text import MIMEText
 import markdown
 import pandas as pd
 from google import genai
+from google.api_core import exceptions  # Google API 예외 처리용
 from datetime import datetime, timedelta
 from jinja2 import Environment, FileSystemLoader
 from prefect import task, get_run_logger, flow
@@ -12,9 +13,13 @@ from sqlalchemy import text
 from tabulate import tabulate
 from dotenv import load_dotenv
 
+# [재시도 로직용 라이브러리]
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
+
 # [사용자 설정] app.core 패키지가 없다면 경로에 맞게 수정 필요
 from app.core.database import get_engine
 from app.core.config import GOOGLE_API_KEY, BASE_DIR
+
 
 # ---------------------------------------------------------
 # 1. [Scanner] 박스권 돌파 종목 스캐닝 함수
@@ -71,14 +76,15 @@ def scan_breakout_stocks():
 
     print(f"\n🚀 [Scanner] 박스권 돌파 종목 발견: {len(df)}개")
     # 콘솔 확인용 출력
-    print(tabulate(df[['ticker', 'date', 'close', 'box_width_pct', 'vol_spike_pct']], 
-                   headers=['티커', '날짜', '종가', '박스권폭(%)', '거래량급증(%)'], 
+    print(tabulate(df[['ticker', 'date', 'close', 'box_width_pct', 'vol_spike_pct']],
+                   headers=['티커', '날짜', '종가', '박스권폭(%)', '거래량급증(%)'],
                    tablefmt='psql', showindex=False))
-    
+
     return df.to_dict('records')
 
+
 # ---------------------------------------------------------
-# 2. [Helper] 보조 함수들
+# 2. [Helper] 보조 함수들 (재시도 로직 포함)
 # ---------------------------------------------------------
 def classify_status(row):
     """재무 데이터를 기반으로 신호등 이모지 반환"""
@@ -95,6 +101,26 @@ def classify_status(row):
     else:
         return "🔴 위험"
 
+
+# ★ [추가] API 호출 재시도 래퍼 함수
+@retry(
+    wait=wait_random_exponential(multiplier=2, min=10, max=120),
+    stop=stop_after_attempt(10), # 최소 10초 대기, 최대 2분까지 대기. 배수(multiplier)를 2로 늘림
+    retry=retry_if_exception_type(exceptions.ResourceExhausted)# 시도 횟수를 5회 -> 10회로 증가 (충분히 40초 이상 버팀)
+)
+def generate_content_safe(client, model_name, contents):
+    """
+    Gemini API 호출 시 429 에러가 발생하면 자동으로 재시도하는 함수
+    """
+    print(f"🤖 API 호출 시도 중... (Model: {model_name})")
+    # genai.Client 사용 방식에 맞춰 호출
+    response = client.models.generate_content(
+        model=model_name,
+        contents=contents
+    )
+    return response.text
+
+
 def send_email(subject, markdown_content, report_date):
     """이메일 발송 함수"""
     EMAIL_USER = os.getenv("EMAIL_USER")
@@ -107,7 +133,7 @@ def send_email(subject, markdown_content, report_date):
 
     try:
         html_body = markdown.markdown(markdown_content, extensions=['tables'])
-        
+
         # 템플릿 로드 시도, 실패시 기본 HTML 사용
         try:
             template_dir = os.path.join(BASE_DIR, "app", "templates")
@@ -132,6 +158,7 @@ def send_email(subject, markdown_content, report_date):
     except Exception as e:
         print(f"❌ 이메일 발송 실패: {e}")
 
+
 # ---------------------------------------------------------
 # 3. [Main Task] AI 리포트 생성 및 발송
 # ---------------------------------------------------------
@@ -154,16 +181,16 @@ def generate_ai_report():
 
     # --- [STEP 1] 섹터 데이터 (Top-Down) ---
     sector_query = text("""
-        SELECT  m.name as Sector, w.ticker, w.rs_rating, w.weekly_return, w.is_above_200ma
-        FROM    price_weekly w
-        INNER JOIN stock_master m ON w.ticker = m.ticker
-        WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-        AND     m.market_type = 'SECTOR'
-        ORDER BY w.rs_rating DESC LIMIT 10;
-    """)
+            SELECT  m.name as "Sector", w.ticker, w.rs_rating, w.weekly_return, w.is_above_200ma
+            FROM    price_weekly w
+            INNER JOIN stock_master m ON w.ticker = m.ticker
+            WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
+            AND     m.market_type = 'SECTOR'
+            ORDER BY w.rs_rating DESC LIMIT 5;  
+        """)
     with engine.connect() as conn:
         sector_df = pd.read_sql(sector_query, conn)
-    
+
     if not sector_df.empty:
         sector_df['200일선'] = sector_df['is_above_200ma'].apply(lambda x: "O" if x == 1 else "X")
         sector_md = sector_df[['Sector', 'rs_rating', 'weekly_return', '200일선']].to_markdown(index=False)
@@ -185,7 +212,7 @@ def generate_ai_report():
         AND     m.market_type = 'STOCK'
         AND     w.rs_rating >= 80
         AND     w.is_above_200ma = 1
-        ORDER BY w.rs_rating DESC LIMIT 20;
+        ORDER BY w.rs_rating DESC LIMIT 10;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
@@ -194,14 +221,15 @@ def generate_ai_report():
         stock_md = "(조건을 만족하는 주도주가 없습니다)"
     else:
         stock_df['비고'] = stock_df.apply(classify_status, axis=1)
-        stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
-        
+        stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
+            lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
+
         def format_weinstein_status(row):
             dev = row['deviation_200ma'] or 0
             if dev >= 50: return f"과열({dev}%)"
             if dev >= 0: return f"2단계({dev}%)"
             return "이탈"
-        
+
         stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
         display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'rs_rating', '추세상태', '비고']]
         stock_md = display_stock_df.to_markdown(index=False)
@@ -226,7 +254,7 @@ def generate_ai_report():
     prompt = f"""
     # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
     # Persona: 윌리엄 오닐, 스탠 와인스테인, 니콜라스 다비스의 철학을 가진 멘토. "친구야"라고 부르며 통찰력 있게 조언.
-    
+
     # Data Provided:
     ## [A] Sector Ranking (Top-Down):
     {sector_md}
@@ -247,23 +275,25 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
-        # [수정] 목록에 있는 모델 중 가장 가볍고 안전한 모델 선택
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-lite', 
-            contents=prompt
+        # [수정] 직접 호출 대신 재시도 로직이 적용된 함수 사용
+        # response = client.models.generate_content(...) -> 아래와 같이 변경
+        report_content = generate_content_safe(
+            client,
+            'gemini-flash-lite-latest',
+            prompt
         )
-        report_content = response.text
-        
+
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
         # print(report_content) # 콘솔이 너무 길어지면 주석 처리
 
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         email_subject = f"📈 [Trend Report] {yesterday} 시장 분석 & 돌파 종목"
-        
+
         send_email(email_subject, report_content, yesterday)
 
     except Exception as e:
-        logger.error(f"Gemini API 호출 실패: {e}")
+        # 5번의 재시도 끝에도 실패하면 여기로 떨어짐
+        logger.error(f"Gemini API 호출 최종 실패: {e}")
 
 
 # ---------------------------------------------------------
@@ -271,9 +301,9 @@ def generate_ai_report():
 # ---------------------------------------------------------
 if __name__ == "__main__":
     load_dotenv()
-    
+
     # 1. 스캐너만 따로 테스트하고 싶다면 아래 주석 해제
     # scan_breakout_stocks()
-    
+
     # 2. 전체 리포트 생성 프로세스 실행 (스캐너 포함)
     generate_ai_report()

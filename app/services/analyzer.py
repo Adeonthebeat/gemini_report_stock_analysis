@@ -3,8 +3,10 @@ from sqlalchemy import text
 from app.core.database import get_engine
 import pandas as pd
 
+
 @task(name="Calculate-Metrics")
 def calculate_metrics(df, ticker, benchmark='VTI'):
+
     # 데이터 길이 체크
     if df.empty or len(df) < 252:
         print(f"⚠️ {ticker}: 데이터 부족 (1년 미만)")
@@ -38,7 +40,7 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
 
     # ------------------------------------------------------------------
-    # [수정 포인트] 날짜 포맷 안전하게 처리하기
+    # 날짜 포맷 안전하게 처리하기
     # 앞단에서 날짜가 문자열로 넘어오든, datetime으로 넘어오든
     # 무조건 다시 datetime으로 바꾼 뒤 -> YYYY-MM-DD 문자열로 뽑아냅니다.
     # ------------------------------------------------------------------
@@ -59,7 +61,7 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
 
     weekly_data = {
         "ticker": ticker,
-        "weekly_date": formatted_date, # '2026-02-02' (여기도 똑같이 적용됨)
+        "weekly_date": formatted_date,  # '2026-02-02' (여기도 똑같이 적용됨)
         "weekly_return": round(float(weekly_return), 2),
         "rs_value": round(float(rs_score), 2),
         "is_above_200ma": 1 if current_price > sma200 else 0,

@@ -79,21 +79,10 @@ def stock_analysis_pipeline():
         ticker = row['ticker']
         market_type = row.get('market_type', 'STOCK')
 
-        # ---------------------------------------------------------
-        # [NEW] 이미 완료된 티커인지 확인하고 건너뛰기
-        # ---------------------------------------------------------
-        if ticker in finished_tickers:
-            # logger.info(f"⏭️ {ticker}: 이미 {target_date_str} 데이터가 있어 건너뜁니다.")
-            skip_count += 1
-            continue
-        # ---------------------------------------------------------
-
-        # 진행 로그 (너무 많으면 주석 처리)
-        logger.info(f"🔄 처리 중: {ticker}")
-
         try:
             df = fetch_combined_data(ticker, market_type)
-            if df.empty: 
+
+            if df.empty:
                 logger.warning(f"⚠️ {ticker}: 수집된 데이터 없음 (Skip)")
                 fail_count += 1
                 continue
