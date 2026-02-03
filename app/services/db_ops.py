@@ -14,7 +14,7 @@ def get_tickers():
         # market_type 컬럼이 없어도 에러나지 않게 처리하려면 스키마 확인이 필요하지만,
         # 앞서 마이그레이션을 했다고 가정하고 SELECT 합니다.
         try:
-            query = text("SELECT ticker, market_type FROM stock_master where ticker = 'TSLA'")
+            query = text("SELECT ticker, market_type FROM stock_master")
             result = conn.execute(query).fetchall()
             return [{'ticker': row.ticker, 'market_type': row.market_type} for row in result]
         except Exception:
