@@ -5,60 +5,76 @@ from app.core.database import get_engine
 from prefect import flow, task, get_run_logger
 import time
 
+
 @task(name="Backfill-Price-Data")
 def backfill_stock_prices(period="2y"):
     """
-    모든 등록된 주식의 과거 데이터를 한꺼번에 수집하여 DB에 적재
-    :param period: 200일선 + RSI 등을 여유롭게 계산하기 위해 '2y'(2년) 추천
+    price_daily 테이블에 데이터가 없는 신규 종목만 골라 과거 데이터를 수집합니다.
+    :param period: 기본 2년치 수집
     """
     logger = get_run_logger()
     engine = get_engine()
 
-    # 1. 수집 대상 종목 가져오기
+    # ---------------------------------------------------------
+    # [수정 1] 수집 대상 필터링 (전체 - 이미 있는 것)
+    # ---------------------------------------------------------
     with engine.connect() as conn:
-        query = text("SELECT ticker FROM stock_master")
-        result = conn.execute(query).fetchall()
-        tickers = [row[0] for row in result] # row.ticker 대신 row[0]이 더 안전할 수 있음
+        # 1. 전체 종목 리스트 (Master)
+        master_query = text("SELECT ticker FROM stock_master")
+        master_result = conn.execute(master_query).fetchall()
+        master_tickers = {row[0] for row in master_result}  # 집합(Set)으로 변환
 
-    logger.info(f"📚 과거 데이터 수집 시작: 총 {len(tickers)}개 종목 (기간: {period})")
+        # 2. 이미 데이터가 있는 종목 리스트 (Existing)
+        # DISTINCT를 사용하여 중복 없이 티커만 가져옵니다.
+        exist_query = text("SELECT DISTINCT ticker FROM price_daily")
+        exist_result = conn.execute(exist_query).fetchall()
+        exist_tickers = {row[0] for row in exist_result}
+
+    # 3. 차집합 연산: 전체 - 이미 있는 것 = 해야 할 것
+    target_tickers = list(master_tickers - exist_tickers)
+
+    if not target_tickers:
+        logger.info("✅ 모든 종목의 데이터가 이미 존재합니다. 작업을 종료합니다.")
+        return
+
+    logger.info(f"📚 데이터 수집 시작")
+    logger.info(f"   - 전체 등록 종목: {len(master_tickers)}개")
+    logger.info(f"   - 이미 데이터 있음: {len(exist_tickers)}개")
+    logger.info(f"   - 🚀 수집 대상(신규): {len(target_tickers)}개 (기간: {period})")
 
     total_count = 0
     success_ticker_count = 0
 
-    for i, ticker in enumerate(tickers):
+    # target_tickers로 루프 시작
+    for i, ticker in enumerate(target_tickers):
         try:
             # 진행 상황 표시 (10개마다 로그)
             if i % 10 == 0:
-                logger.info(f"🚀 진행중... ({i}/{len(tickers)}) 현재: {ticker}")
+                logger.info(f"🚀 진행중... ({i + 1}/{len(target_tickers)}) 현재: {ticker}")
 
-            # 2. yfinance로 데이터 다운로드
-            # auto_adjust=True: 수정주가(액면분할/배당 반영)
+            # ---------------------------------------------------------
+            # 2. yfinance로 데이터 다운로드 (이하 동일)
+            # ---------------------------------------------------------
             df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
 
             if df.empty:
                 logger.warning(f"⚠️ {ticker}: 데이터 없음 (상장폐지 또는 티커 변경 가능성)")
                 continue
 
-            # ---------------------------------------------------------
-            # [핵심 수정] 데이터 전처리 (yfinance 버전 호환성 강화)
-            # ---------------------------------------------------------
-            
-            # (1) MultiIndex 컬럼 평탄화 ('Close', 'AAPL') -> 'Close'
+            # (1) MultiIndex 컬럼 평탄화
             if isinstance(df.columns, pd.MultiIndex):
-                # 레벨 0(Price)만 남기고 티커 이름 제거
                 df.columns = df.columns.get_level_values(0)
 
             # (2) 인덱스(Date)를 컬럼으로 변환
             df = df.reset_index()
 
-            # (3) 날짜 컬럼 찾기 ('Date' or 'date')
+            # (3) 날짜 컬럼 찾기
             date_col = 'Date' if 'Date' in df.columns else 'date'
             if date_col not in df.columns:
-                logger.error(f"❌ {ticker}: 날짜 컬럼을 찾을 수 없음. 컬럼: {df.columns}")
+                logger.error(f"❌ {ticker}: 날짜 컬럼 없음")
                 continue
 
-            # (4) 날짜 포맷 통일 (Timezone 제거 -> YYYY-MM-DD 문자열)
-            # DB 저장 시 문자열로 주면 Postgres가 알아서 DATE 타입으로 받아줌
+            # (4) 날짜 포맷 통일
             df['date_str'] = pd.to_datetime(df[date_col]).dt.strftime('%Y-%m-%d')
 
             # ---------------------------------------------------------
@@ -66,7 +82,6 @@ def backfill_stock_prices(period="2y"):
             # ---------------------------------------------------------
             rows_to_insert = []
             for _, row in df.iterrows():
-                # 필수 컬럼 값 가져오기 (없으면 0 처리)
                 try:
                     data = {
                         "ticker": ticker,
@@ -78,11 +93,10 @@ def backfill_stock_prices(period="2y"):
                         "volume": int(row.get('Volume', 0))
                     }
                     rows_to_insert.append(data)
-                except Exception as inner_e:
-                    logger.warning(f"⚠️ {ticker} 행 변환 중 오류: {inner_e}")
+                except Exception:
                     continue
 
-            # 4. DB에 저장 (Batch Insert)
+            # 4. DB에 저장
             if rows_to_insert:
                 with engine.begin() as conn:
                     stmt = text("""
@@ -99,22 +113,23 @@ def backfill_stock_prices(period="2y"):
 
                 total_count += len(rows_to_insert)
                 success_ticker_count += 1
-                # logger.info(f"   ✅ {ticker}: {len(rows_to_insert)}건 저장")
 
-            # 서버 부하 방지용 짧은 대기
+            # 서버 부하 방지용 대기
             time.sleep(0.2)
 
         except Exception as e:
-            logger.error(f"❌ {ticker} 수집 중 치명적 오류: {e}")
+            logger.error(f"❌ {ticker} 수집 중 오류: {e}")
 
-    logger.info(f"🎉 전체 초기화 완료!")
-    logger.info(f"   - 성공 종목: {success_ticker_count} / {len(tickers)}")
-    logger.info(f"   - 총 데이터 행: {total_count}개")
+    logger.info(f"🎉 신규 종목 백필 완료!")
+    logger.info(f"   - 성공 종목: {success_ticker_count} / {len(target_tickers)}")
+    logger.info(f"   - 총 추가된 행: {total_count}개")
 
-# 단독 실행을 위한 코드
+
+# 단독 실행
 if __name__ == "__main__":
     @flow(name="Manual-History-Load")
     def run_backfill():
-        backfill_stock_prices(period="2y") # 넉넉하게 2년치
+        backfill_stock_prices(period="2y")
+
 
     run_backfill()
