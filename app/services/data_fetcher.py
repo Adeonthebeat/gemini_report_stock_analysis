@@ -31,7 +31,7 @@ def check_market_data_update(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
-    end_date = datetime.now()
+    end_date = datetime.now() + timedelta(days=1)
     # 200일선 등 계산을 위해 넉넉히 2년치
     start_date = end_date - timedelta(days=730)
 
