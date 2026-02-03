@@ -47,53 +47,107 @@ def check_market_data_update(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
+    # 내일 날짜까지 범위를 잡아야 오늘 데이터(미국 현지시간)가 포함됨
     end_date = datetime.now() + timedelta(days=1)
+    # 넉넉히 2년치 데이터 요청
     start_date = end_date - timedelta(days=730)
 
     print(f"📥 {ticker} ({market_type}) vs {benchmark} 데이터 수집 중... (~{end_date.strftime('%Y-%m-%d')})")
 
     try:
-        # 1. 데이터 다운로드
+        # 1. 데이터 다운로드 (에러 무시 옵션 추가)
         df = yf.download([ticker, benchmark], start=start_date, end=end_date,
-                         interval='1d', auto_adjust=True, progress=False)
-
+                         interval='1d', auto_adjust=True, progress=False, group_by='ticker')
+        
+        # 2. 데이터가 비었는지 확인
         if df.empty:
+            print(f"⚠️ {ticker}: 다운로드된 데이터가 없습니다.")
             return pd.DataFrame()
 
         # ---------------------------------------------------------
-        # [핵심 수정] 컬럼 평탄화를 가장 먼저 수행!
-        # MultiIndex(Price, Ticker) -> SingleIndex(Price_Ticker)
+        # [Step 1] 인덱스(날짜) 정리부터 먼저 수행 (Timezone 제거)
         # ---------------------------------------------------------
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [f'{col[0]}_{col[1]}' for col in df.columns]
-        else:
-            # 티커가 하나인 경우 등 예외 처리
-            df.columns = [f'{col}_{ticker}' for col in df.columns]
+        # yfinance는 종종 타임존이 포함된 날짜를 줍니다. 이걸 먼저 제거해야 뒤탈이 없습니다.
+        try:
+            df.index = df.index.tz_localize(None)
+        except Exception:
+            pass # 이미 타임존이 없으면 패스
 
-        # 2. 이제 인덱스(날짜)를 컬럼으로 변환 (이제 컬럼들이 모두 문자열이라 안전함)
+        df.index.name = 'Date' # 인덱스 이름을 'Date'로 강제 고정
+
+        # ---------------------------------------------------------
+        # [Step 2] 컬럼 구조 확인 및 평탄화 (여기가 핵심!)
+        # ---------------------------------------------------------
+        # yfinance가 데이터를 어떻게 줬는지 확인하고 그에 맞춰 처리합니다.
+        
+        # Case A: MultiIndex인 경우 (일반적인 경우) -> ('AAPL', 'Close') 형태
+        if isinstance(df.columns, pd.MultiIndex):
+            # yfinance 0.2.x 버전의 group_by='ticker' 옵션은 (Ticker, Price) 순서일 수 있음
+            # 혹은 기본 설정은 (Price, Ticker) 순서임.
+            # 가장 안전한 방법: 레벨을 확인해서 'Close'가 어디 있는지 찾기보다,
+            # 그냥 단순하게 모든 컬럼을 순회하며 이름 짓기
+            
+            new_columns = []
+            for col in df.columns:
+                # col은 ('AAPL', 'Close') 또는 ('Close', 'AAPL') 튜플 형태
+                # 튜플의 요소들을 언더바(_)로 이어붙임 (순서 상관없이 고유한 이름 생성)
+                # 예: AAPL_Close 또는 Close_AAPL
+                c1 = str(col[0])
+                c2 = str(col[1])
+                
+                # 우리가 원하는 포맷: 'Close_AAPL' 형태로 통일
+                if c1 == ticker or c1 == benchmark: # (Ticker, Price) 순서인 경우
+                    new_columns.append(f"{c2}_{c1}")
+                else: # (Price, Ticker) 순서인 경우
+                    new_columns.append(f"{c1}_{c2}")
+            
+            df.columns = new_columns
+
+        # Case B: SingleIndex인 경우 (혹시 모를 예외)
+        else:
+            # 그냥 컬럼 이름 뒤에 티커가 없으면 붙여줌
+            df.columns = [f"{col}_{ticker}" if ticker not in col else col for col in df.columns]
+
+        # ---------------------------------------------------------
+        # [Step 3] "주인공" 데이터 검증
+        # ---------------------------------------------------------
+        # 우리가 필요한 'Close_티커' 컬럼이 진짜 있는지 확인
+        target_col = f"Close_{ticker}"
+        if target_col not in df.columns:
+            # 혹시 대소문자 문제일 수도 있으니 확인
+            found = False
+            for c in df.columns:
+                if f"close_{ticker}".lower() == c.lower():
+                    df = df.rename(columns={c: target_col})
+                    found = True
+                    break
+            
+            if not found:
+                print(f"❌ {ticker}: 핵심 데이터({target_col})를 찾을 수 없습니다. 컬럼 목록: {list(df.columns[:5])}...")
+                return pd.DataFrame()
+
+        # ---------------------------------------------------------
+        # [Step 4] 날짜 포맷 통일 (YYYY-MM-DD)
+        # ---------------------------------------------------------
+        # 이제 인덱스를 컬럼으로 끄집어냅니다.
         df = df.reset_index()
 
-        # ---------------------------------------------------------
-        # [NEW] 날짜 포맷 정제 (YYYY-MM-DD 통일)
-        # ---------------------------------------------------------
-        # (1) 컬럼명 찾기 ('Date' 또는 'date')
-        date_col = 'Date' if 'Date' in df.columns else 'date'
-        
-        # (2) 섞여있는 날짜 포맷을 표준 datetime 객체로 변환
-        df[date_col] = pd.to_datetime(df[date_col])
-
-        # (3) YYYY-MM-DD 문자열 포맷으로 강제 통일
-        df[date_col] = df[date_col].dt.strftime('%Y-%m-%d')
-        
-        # (4) 날짜 기준으로 중복 제거 (가장 마지막 값만 남김)
-        df = df.drop_duplicates(subset=[date_col], keep='last')
-
-        # (5) 다시 날짜를 인덱스로 설정
-        df = df.set_index(date_col)
-        # ---------------------------------------------------------
-
-        return df.dropna()
+        # 'Date' 컬럼 포맷팅
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+            
+            # 날짜 기준 중복 제거 및 인덱스 재설정
+            df = df.drop_duplicates(subset=['Date'], keep='last')
+            df = df.set_index('Date')
+            
+            return df.dropna()
+        else:
+            print(f"❌ {ticker}: 날짜 컬럼 생성 실패")
+            return pd.DataFrame()
 
     except Exception as e:
-        print(f"❌ {ticker} 데이터 수집 실패: {e}")
+        print(f"❌ {ticker} 처리 중 치명적 오류: {e}")
+        # 디버깅을 위해 에러 내용 상세 출력
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
