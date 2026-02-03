@@ -3,12 +3,10 @@ from sqlalchemy import text
 from app.core.database import get_engine
 import pandas as pd
 
-
 @task(name="Calculate-Metrics")
 def calculate_metrics(df, ticker, benchmark='VTI'):
     # 데이터 길이 체크
     if df.empty or len(df) < 252:
-        # 에러 발생시키기보다 로그 찍고 None 리턴하는 게 파이프라인 안 끊기고 좋음
         print(f"⚠️ {ticker}: 데이터 부족 (1년 미만)")
         return None, None
 
@@ -39,10 +37,19 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
     sma200 = float(t_close.rolling(window=200).mean().iloc[-1])
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
 
-    # [중요] DB 저장용 딕셔너리 키를 '소문자'로 변경 (Supabase 호환)
+    # ------------------------------------------------------------------
+    # [수정 포인트] 날짜 포맷 안전하게 처리하기
+    # 앞단에서 날짜가 문자열로 넘어오든, datetime으로 넘어오든
+    # 무조건 다시 datetime으로 바꾼 뒤 -> YYYY-MM-DD 문자열로 뽑아냅니다.
+    # ------------------------------------------------------------------
+    latest_date_obj = pd.to_datetime(df.index[-1])
+    formatted_date = latest_date_obj.strftime('%Y-%m-%d')
+    # ------------------------------------------------------------------
+
+    # [중요] DB 저장용 딕셔너리
     daily_data = {
         "ticker": ticker,
-        "date": df.index[-1].strftime('%Y-%m-%d'),  # 포맷 변경 YYYY-MM-DD
+        "date": formatted_date,  # '2026-02-02'
         "open": float(df[f'Open_{ticker}'].iloc[-1]),
         "high": float(df[f'High_{ticker}'].iloc[-1]),
         "low": float(df[f'Low_{ticker}'].iloc[-1]),
@@ -52,7 +59,7 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
 
     weekly_data = {
         "ticker": ticker,
-        "weekly_date": df.index[-1].strftime('%Y-%m-%d'),
+        "weekly_date": formatted_date, # '2026-02-02' (여기도 똑같이 적용됨)
         "weekly_return": round(float(weekly_return), 2),
         "rs_value": round(float(rs_score), 2),
         "is_above_200ma": 1 if current_price > sma200 else 0,
