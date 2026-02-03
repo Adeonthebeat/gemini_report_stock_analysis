@@ -18,7 +18,7 @@ def backfill_stock_prices(period="1y"):
     # 1. 수집 대상 종목 가져오기
     with engine.connect() as conn:
         # ETF, STOCK 가리지 않고 다 가져옵니다.
-        query = text("SELECT ticker FROM stock_master where market_type != 'STOCK'")
+        query = text("SELECT ticker FROM stock_master")
         tickers = [row.ticker for row in conn.execute(query).fetchall()]
 
     logger.info(f"📚 과거 데이터 수집 시작: 총 {len(tickers)}개 종목 (기간: {period})")
