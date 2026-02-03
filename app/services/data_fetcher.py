@@ -31,27 +31,46 @@ def check_market_data_update(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
+    # [설정] 오늘 날짜 데이터를 포함하기 위해 내일 날짜까지 범위를 잡습니다.
     end_date = datetime.now() + timedelta(days=1)
-    # 200일선 등 계산을 위해 넉넉히 2년치
     start_date = end_date - timedelta(days=730)
 
-    print(f"📥 {ticker} ({market_type}) vs {benchmark} 데이터 수집 중...")
+    print(f"📥 {ticker} ({market_type}) vs {benchmark} 데이터 수집 중... (~{end_date.strftime('%Y-%m-%d')})")
 
     try:
-        # 1. 티커와 벤치마크 같이 다운로드
+        # 1. 데이터 다운로드
         df = yf.download([ticker, benchmark], start=start_date, end=end_date,
                          interval='1d', auto_adjust=True, progress=False)
 
         if df.empty:
             return pd.DataFrame()
 
-        # 2. [중요] MultiIndex 컬럼 평탄화 (Price, Ticker) -> Price_Ticker
-        # 예: ('Close', 'AAPL') -> 'Close_AAPL'
+        # 2. 인덱스(날짜)를 컬럼으로 변환
+        df = df.reset_index()
+
+        # ---------------------------------------------------------
+        # [NEW] 날짜 포맷 정제 (YYYY-MM-DD 통일)
+        # ---------------------------------------------------------
+        # (1) 컬럼명 찾기 ('Date' 또는 'date')
+        date_col = 'Date' if 'Date' in df.columns else 'date'
+        
+        # (2) 섞여있는 날짜 포맷을 표준 datetime 객체로 변환
+        df[date_col] = pd.to_datetime(df[date_col])
+
+        # (3) YYYY-MM-DD 문자열 포맷으로 강제 통일 (사용자 선호 반영)
+        df[date_col] = df[date_col].dt.strftime('%Y-%m-%d')
+        
+        # (4) 날짜 기준으로 중복 제거 (가장 마지막 값만 남김)
+        df = df.drop_duplicates(subset=[date_col], keep='last')
+
+        # (5) 다시 날짜를 인덱스로 설정
+        df = df.set_index(date_col)
+        # ---------------------------------------------------------
+
+        # 3. 컬럼 이름 평탄화 (Price, Ticker) -> Price_Ticker
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [f'{col[0]}_{col[1]}' for col in df.columns]
         else:
-            # 티커가 하나만 요청되었거나 구조가 다를 경우 포맷 통일
-            # (이 로직을 타면 calculate_metrics에서 Close_VTI를 못 찾아 에러날 수 있으므로 주의)
             df.columns = [f'{col}_{ticker}' for col in df.columns]
 
         return df.dropna()
