@@ -147,3 +147,19 @@ def init_db_flow():
         """))
 
     print("✅ Supabase(PostgreSQL) 테이블 초기화 및 스키마 점검 완료")
+
+
+def get_finished_tickers(target_date_str):
+    """
+    이미 작업이 완료된(DB에 해당 날짜 데이터가 있는) 티커 목록을 가져옵니다.
+    Set 자료형으로 반환하여 검색 속도를 높입니다.
+    """
+    engine = get_engine()
+    
+    query = text("SELECT ticker FROM price_daily WHERE date = :date")
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, {"date": target_date_str}).fetchall()
+        
+    # 예: {'AAPL', 'TSLA', 'NVDA'} 형태의 집합(Set)으로 반환
+    return {row[0] for row in result}
