@@ -249,7 +249,7 @@ def generate_ai_report():
     try:
         # 현재 시점 기준 1.5 Flash의 가장 성능 좋은 최신 안정화 버전
         response = client.models.generate_content(
-            model='gemini-1.5-flash-002', 
+            model='gemini-1.5-flash-latest', 
             contents=prompt
         )
         report_content = response.text
