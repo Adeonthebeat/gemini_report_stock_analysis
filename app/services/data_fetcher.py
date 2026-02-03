@@ -47,7 +47,6 @@ def check_market_data_update(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
-    # [설정] 오늘 날짜 데이터를 포함하기 위해 내일 날짜까지 범위를 잡습니다.
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=730)
 
@@ -61,7 +60,17 @@ def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
         if df.empty:
             return pd.DataFrame()
 
-        # 2. 인덱스(날짜)를 컬럼으로 변환
+        # ---------------------------------------------------------
+        # [핵심 수정] 컬럼 평탄화를 가장 먼저 수행!
+        # MultiIndex(Price, Ticker) -> SingleIndex(Price_Ticker)
+        # ---------------------------------------------------------
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [f'{col[0]}_{col[1]}' for col in df.columns]
+        else:
+            # 티커가 하나인 경우 등 예외 처리
+            df.columns = [f'{col}_{ticker}' for col in df.columns]
+
+        # 2. 이제 인덱스(날짜)를 컬럼으로 변환 (이제 컬럼들이 모두 문자열이라 안전함)
         df = df.reset_index()
 
         # ---------------------------------------------------------
@@ -73,7 +82,7 @@ def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
         # (2) 섞여있는 날짜 포맷을 표준 datetime 객체로 변환
         df[date_col] = pd.to_datetime(df[date_col])
 
-        # (3) YYYY-MM-DD 문자열 포맷으로 강제 통일 (사용자 선호 반영)
+        # (3) YYYY-MM-DD 문자열 포맷으로 강제 통일
         df[date_col] = df[date_col].dt.strftime('%Y-%m-%d')
         
         # (4) 날짜 기준으로 중복 제거 (가장 마지막 값만 남김)
@@ -82,12 +91,6 @@ def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
         # (5) 다시 날짜를 인덱스로 설정
         df = df.set_index(date_col)
         # ---------------------------------------------------------
-
-        # 3. 컬럼 이름 평탄화 (Price, Ticker) -> Price_Ticker
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [f'{col[0]}_{col[1]}' for col in df.columns]
-        else:
-            df.columns = [f'{col}_{ticker}' for col in df.columns]
 
         return df.dropna()
 
