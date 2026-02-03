@@ -247,9 +247,9 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
-        # 현재 시점 기준 1.5 Flash의 가장 성능 좋은 최신 안정화 버전
+        # [수정] 목록에 있는 모델 중 가장 가볍고 안전한 모델 선택
         response = client.models.generate_content(
-            model='gemini-1.5-flash-latest', 
+            model='gemini-2.0-flash-lite', 
             contents=prompt
         )
         report_content = response.text
