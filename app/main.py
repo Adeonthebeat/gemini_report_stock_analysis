@@ -1,4 +1,3 @@
-# [여기부터 복사하세요]
 import warnings
 from datetime import datetime
 
@@ -20,48 +19,61 @@ from app.services.financial_collector import fetch_and_save_financials
 def stock_analysis_pipeline():
     logger = get_run_logger()
 
-    # 2. 업데이트 필요 여부 확인
+    # 1. 업데이트 필요 여부 확인 (VTI 기준)
     if check_market_data_update('VTI'):
-        logger.info("이미 최신 데이터가 존재합니다. 작업을 건너뜁니다.")
+        logger.info("✅ 이미 최신 데이터가 존재합니다. 작업을 건너뜁니다.")
         generate_ai_report()
         return
 
-    # 3. 대상 티커 조회
+    # 2. 대상 티커 조회
     try:
         ticker_list = get_tickers()
-    except Exception:
-        logger.error("티커 리스트 로드 실패")
+        
+        # [추가] 티커 리스트 이쁘게 로그 찍기
+        symbols = [item['ticker'] for item in ticker_list]
+        logger.info(f"📋 [티커 로드 완료] 총 {len(symbols)}개 종목을 분석합니다.")
+        logger.info(f"대상: {', '.join(symbols)}")
+        
+    except Exception as e:
+        logger.error(f"❌ 티커 리스트 로드 실패: {e}")
         return
 
-    # 4. 데이터 수집 및 지표 계산 루프
-    for row in ticker_list:
+    # 3. [위로 이동됨] 재무데이터 수집 (토요일에만 한 번 실행)
+    # 0:월, 1:화, ..., 4:금, 5:토, 6:일
+    today_weekday = datetime.now().weekday()
 
+    if today_weekday == 5:
+        logger.info("📅 오늘은 토요일! 재무제표/펀더멘털 데이터를 전체 갱신합니다.")
+        try:
+            fetch_and_save_financials()
+        except Exception as e:
+            logger.error(f"❌ 재무제표 업데이트 중 오류 발생: {e}")
+    else:
+        logger.info(f"⏩ 평일(요일코드: {today_weekday})이므로 재무제표 수집은 건너뜁니다. (토요일에 수행)")
+
+    # 4. 데이터 수집 및 지표 계산 루프 (일간/주간 가격 데이터)
+    logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
+    
+    for row in ticker_list:
         ticker = row['ticker']
         market_type = row.get('market_type', 'STOCK')
 
+        logger.info(f" # 티커 : {ticker}")
+        
         try:
             df = fetch_combined_data(ticker, market_type)
-            if df.empty: continue
+            if df.empty: 
+                logger.info(f" # 티커 : {ticker} 데이터 없음")
+                continue
 
             daily, weekly = calculate_metrics(df, ticker)
             save_to_sqlite(daily, weekly)
+            
         except Exception as e:
-            logger.error(f"Error {ticker}: {e}")
-
-        # [수정] 4. 재무데이터 수집 (매일 하지 말고, "토요일"에만 수행)
-        # 0:월, 1:화, ..., 4:금, 5:토, 6:일
-        # 한국 시간 기준 화~토 아침에 도니까, 토요일(5)이나 일요일(6)에 잡으면 됩니다.
-
-        today_weekday = datetime.now().weekday()
-
-        # 토요일(5)이거나, 강제로 돌리고 싶을 때만 실행
-        if today_weekday == 5:
-            logger.info("📅 오늘은 토요일! 재무제표/펀더멘털 데이터를 갱신합니다.")
-            fetch_and_save_financials()
-        else:
-            logger.info("⏩ 평일이므로 재무제표 수집은 건너뜁니다. (토요일에 수행)")
+            logger.error(f"❌ Error {ticker}: {e}")
 
     # 5. 후처리 및 리포트
+    logger.info("📊 RS 지표 업데이트 및 리포트 작성을 시작합니다.")
     update_rs_indicators()
     generate_ai_report()
 
