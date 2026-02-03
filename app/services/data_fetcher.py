@@ -12,22 +12,38 @@ def check_market_data_update(benchmark='VTI'):
     engine = get_engine()
 
     try:
-        market_df = yf.download(benchmark, period="5d", progress=False, auto_adjust=False)
+        # [수정 1] 벤치마크 데이터 가져오기
+        market_df = yf.download(benchmark, period="5d", progress=False, auto_adjust=True)
         if market_df.empty:
             return False
-        latest_market_date = market_df.index[-1].strftime('%Y%m%d')
+        
+        # [수정 2] 시장의 최신 날짜를 'YYYY-MM-DD' 포맷으로 추출 (DB와 포맷 통일)
+        latest_market_date = market_df.index[-1].strftime('%Y-%m-%d')
+        print(f"🔎 시장 최신 데이터 날짜: {latest_market_date}")
+
     except Exception as e:
         logger.error(f"시장 데이터 확인 중 오류: {e}")
         return False
 
     with engine.connect() as conn:
+        # DB에서 가장 최근 날짜 가져오기
         query = text("select max(date) from price_daily where ticker = :ticker")
         result = conn.execute(query, {"ticker": benchmark}).scalar()
 
-    if result and result >= latest_market_date:
-        logger.info("이미 최신 데이터입니다.")
-        return True
-    return False
+    # [수정 3] DB 날짜가 있다면 문자열로 변환해서 비교
+    if result:
+        # result가 datetime.date 객체일 경우 문자열로 변환
+        db_date_str = str(result)  # '2026-02-02' 형태가 됨
+        
+        print(f"🗄️ DB 저장된 최신 날짜: {db_date_str}")
+
+        # 문자열끼리 비교 (YYYY-MM-DD >= YYYY-MM-DD)
+        if db_date_str >= latest_market_date:
+            logger.info(f"✅ 이미 최신 데이터({db_date_str})입니다. 업데이트를 건너뜁니다.")
+            return True # 업데이트 안 함
+
+    logger.info(f"🚀 업데이트 필요 (DB: {result} vs Market: {latest_market_date})")
+    return False # 업데이트 진행
 
 
 def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
