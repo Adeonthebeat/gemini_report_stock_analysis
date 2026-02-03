@@ -1,0 +1,37 @@
+name: Check Google Gemini Models
+
+# 언제 실행할까요?
+on:
+  workflow_dispatch:  # ✋ 깃허브 홈페이지에서 'Run workflow' 버튼으로 수동 실행
+
+jobs:
+  check-available-models:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. 저장소 코드 내려받기
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 2. 파이썬 3.11 설정
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    # 3. 필수 라이브러리 설치
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # 작성해주신 코드(from google import genai)는 최신 SDK가 필요합니다.
+        pip install google-genai python-dotenv
+
+    # 4. 모델 확인 스크립트 실행
+    - name: Run Model Check Script
+      env:
+        # 깃허브 Settings > Secrets에 저장된 키를 불러옵니다
+        GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      run: |
+        # 파일명이 check_models.py 라고 가정했습니다. 
+        # 만약 파일명이 다르다면 아래 이름을 맞춰주세요.
+        python check_models.py
