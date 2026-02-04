@@ -1,4 +1,4 @@
-name: Manual Financial Update
+name: Financial Update
 
 # ✋ 수동으로 버튼 누를 때만 실행됩니다 (workflow_dispatch)
 # 원하시면 schedule을 추가해서 주말에만 돌게 할 수도 있습니다.
