@@ -3,7 +3,7 @@ name: Daily Stock Analysis Report
 on:
   schedule:
     # 🕒 시간 설정 (UTC 기준)
-    # 한국 시간 아침 9시 35분 = UTC 같은 날 0시 35분
+    # 한국 시간 아침 9시 26분 = UTC 같은 날 0시 26분
     # 화~토요일 실행 (미국 장 마감 후 다음 날 아침 리포트)
     - cron: '26 0 * * 2-6'
 
