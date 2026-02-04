@@ -2,7 +2,11 @@ name: Daily Stock Analysis Report
 
 on:
   schedule:
-    - cron: '47 23 * * 1-5'
+    # 🕒 시간 설정 (UTC 기준)
+    # 한국 시간 아침 9시 35분 = UTC 같은 날 0시 35분
+    # 화~토요일 실행 (미국 장 마감 후 다음 날 아침 리포트)
+    - cron: '26 0 * * 2-6'
+
   workflow_dispatch:
 
 jobs:
@@ -21,13 +25,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # [수정됨] google-api-core와 google-generativeai 추가
-        # (에러 해결을 위해 google-api-core는 필수입니다)
+        # [수정됨] google-api-core 추가 (에러 해결!)
         pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary
-        
-        # 혹시 requirements.txt 파일을 만드셨다면 
-        # 위 긴 줄 대신 아래 명령어를 쓰는 게 관리가 더 쉽습니다:
-        # pip install -r requirements.txt
 
     - name: Run Main Script
       env:
