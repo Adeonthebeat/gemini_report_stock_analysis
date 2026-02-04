@@ -2,12 +2,11 @@ name: Daily Stock Analysis Report
 
 on:
   schedule:
-    # 🕒 시간 설정 (UTC 기준)
-    # 한국 시간 아침 9시 26분 = UTC 같은 날 0시 26분
-    # 화~토요일 실행 (미국 장 마감 후 다음 날 아침 리포트)
-    - cron: '26 0 * * 2-6'
+    # 🕒 한국 시간 아침 9시 43분 (UTC 00:43)
+    # 화~토 실행 (월요일 아침엔 미국장 데이터가 없으므로 제외)
+    - cron: '43 0 * * 2-6'
 
-  workflow_dispatch:
+  workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
   stock-analysis:
@@ -25,8 +24,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # [수정됨] google-api-core 추가 (에러 해결!)
-        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary
+        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity
 
     - name: Run Main Script
       env:
@@ -36,4 +34,5 @@ jobs:
         EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
       run: |
+        # PYTHONPATH 설정이 필요할 수 있어 모듈 실행 방식 유지
         python -m app.main
