@@ -26,7 +26,7 @@ def backfill_stock_prices(period="2y"):
 
         # 2. 이미 데이터가 있는 종목 리스트 (Existing)
         # DISTINCT를 사용하여 중복 없이 티커만 가져옵니다.
-        exist_query = text("SELECT DISTINCT ticker FROM price_daily")
+        exist_query = text("SELECT DISTINCT ticker FROM price_daily where date < '2026-02-02'")
         exist_result = conn.execute(exist_query).fetchall()
         exist_tickers = {row[0] for row in exist_result}
 
