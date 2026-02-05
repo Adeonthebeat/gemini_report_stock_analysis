@@ -1,51 +1,39 @@
 name: Daily Stock Analysis Report
 
-# 언제 실행할까요? (트리거)
 on:
   schedule:
-    # 🕒 시간 설정 (UTC 기준)
-    # 한국 시간 아침 8시 = UTC 전날 밤 23:00
-    # 화~토요일 실행 (미국장은 월~금 열리지만, 한국 시간으로는 화~토 새벽에 마감되므로)
-    - cron: '47 23 * * 1-5'
+    # 🕒 한국 시간 아침 6시 43분 = UTC 전날 밤 21시 43분
+    # 미국 월요일 장 마감 -> 한국 화요일 아침 리포트이므로
+    # UTC 기준으로는 '월~금(1-5)'로 설정해야 함
+    - cron: '43 21 * * 1-5'
 
-  # ✋ 수동 실행 버튼 (테스트용)
-  workflow_dispatch:
+  workflow_dispatch: # 수동 실행 버튼 활성화
 
 jobs:
   stock-analysis:
-    runs-on: ubuntu-latest # 깃허브가 빌려주는 빈 깡통 컴퓨터 (우분투 리눅스)
+    runs-on: ubuntu-latest
 
     steps:
-    # 1. 저장소의 코드를 이 컴퓨터로 내려받기
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 2. 파이썬 설치하기 (3.11 버전)
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    # 3. 필요한 라이브러리 설치하기
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # [수정됨] psycopg2-binary 추가 (PostgreSQL 접속용 필수!)
-        pip install pandas yfinance google-genai sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary
+        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity
 
-    # 4. (삭제됨) 데이터 폴더 만들기 단계는 이제 필요 없습니다. (클라우드 DB니까요!)
-
-    # 5. 메인 스크립트 실행 🚀
     - name: Run Main Script
       env:
-        # 깃허브 설정 페이지(Secrets)에 저장해둔 비밀키들을 불러옵니다
         GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-
-        # [수정됨] 여기가 핵심! Supabase 주소를 비밀 금고에서 꺼내줍니다.
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
-
       run: |
+        # PYTHONPATH 설정이 필요할 수 있어 모듈 실행 방식 유지
         python -m app.main
