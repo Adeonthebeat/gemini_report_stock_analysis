@@ -212,6 +212,8 @@ def generate_ai_report():
         AND     m.market_type = 'STOCK'
         AND     w.rs_rating >= 80
         AND     w.is_above_200ma = 1
+        AND     f.fundamental_grade IN ('A', 'B')
+        AND     w.weekly_return > 0
         ORDER BY w.rs_rating DESC LIMIT 10;
     """)
     with engine.connect() as conn:
