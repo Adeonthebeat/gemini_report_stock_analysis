@@ -267,14 +267,14 @@ def generate_ai_report():
     ## [C] Breakout Candidates (Today's Scanner):
     {breakout_md}
 
-    ## [D] 보유 종목 분석(TSLA, GOOGL, COR, TEVA, WMT, ISSC):
+    ## [D] 보유 종목 분석(TSLA, GOOGL, COR(coresite Realty Corporation), TEVA, WMT, ISSC, MU, ACRE):
     
 
     # Request:
     1. **시장 브리핑:** [A]를 보고 주도 섹터 파악 및 시장 공격/방어 여부 판단.
     2. **오늘의 Top Pick:** [B]와 [C] 중 가장 매력적인 3종목 선정 및 이유 (와인스테인/다비스 관점).
        - 만약 [C]에 종목이 없다면, [B] 위주로 추천하되 "오늘은 돌파 종목이 없으니 무리하지 말라"고 조언.
-    3. [D] 보유종목 기술적 분석 및 해당 종목의 뉴스 요약해줘
+    3. [D] 보유종목 기술적 분석(신규매수 포인트 및 추가매수 타점) 및 해당 종목의 뉴스 요약해줘
     4. **리스크 관리:** 과열 종목 경고.
     5. **멘토의 한마디:** 투자 심리 케어.
     """
