@@ -210,11 +210,12 @@ def generate_ai_report():
         LEFT JOIN financial_quarterly fq ON w.ticker = fq.ticker AND fq.date = (SELECT MAX(date) FROM financial_quarterly WHERE ticker = w.ticker)
         WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
         AND     m.market_type = 'STOCK'
-        AND     w.rs_rating >= 80
+        AND     w.rs_rating >= 87
+        AND     w.rs_rating <= 95
         AND     w.is_above_200ma = 1
         AND     f.fundamental_grade IN ('A', 'B')
         AND     w.weekly_return > 0
-        ORDER BY w.rs_rating DESC LIMIT 10;
+        ORDER BY w.weekly_return DESC LIMIT 10;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
