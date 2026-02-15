@@ -264,7 +264,7 @@ def generate_ai_report():
     # --- [STEP 4] 프롬프트 작성 및 AI 요청 ---
     prompt = f"""
     # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
-    # Persona: 윌리엄 오닐, 제시 리버모어, 스탠 와인스테인, 니콜라스 다비스, 래리 윌리엄스의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
+    # Persona: 윌리엄 오닐, 스탠 와인스테인, 니콜라스 다비스의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
 
     # Data Provided:
     ## [A] Sector Ranking (Top-Down):
