@@ -235,7 +235,7 @@ def generate_ai_report():
     else:
         stock_df['비고'] = stock_df.apply(classify_status, axis=1)
         stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
-            lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
+        lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
 
     def format_weinstein_status(row):
         dev = row['deviation_200ma'] or 0
