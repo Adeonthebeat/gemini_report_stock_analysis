@@ -30,12 +30,14 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
 
     # 2. 성장률 계산 (YoY) - 이제 정렬되었으므로 정상 작동
     # 데이터가 5개 미만이면 앞쪽은 어쩔 수 없이 NaN이 뜹니다.
-    rev_growth = revenue.pct_change(periods=4, fill_method=None) * 100
+    # ✨ 수정된 코드 (절대값 분모 사용):
+    # (현재 - 과거) / abs(과거) 공식을 사용합니다.
+    rev_growth = (revenue.diff(periods=4) / revenue.shift(periods=4).abs()) * 100
 
     if not eps_basic.empty and not eps_basic.isna().all():
-        real_eps_growth = eps_basic.pct_change(periods=4, fill_method=None) * 100
+        real_eps_growth = (eps_basic.diff(periods=4) / eps_basic.shift(periods=4).abs()) * 100
     else:
-        real_eps_growth = net_income.pct_change(periods=4, fill_method=None) * 100
+        real_eps_growth = (net_income.diff(periods=4) / net_income.shift(periods=4).abs()) * 100
 
     rows_to_insert = []
 
@@ -155,7 +157,7 @@ def process_stock_fundamentals(engine, ticker, logger):
         # [수정] 이제 eps_basic 컬럼도 가져올 수 있지만,
         # 점수 계산에는 이미 계산된 'eps_growth_yoy'를 쓰면 됩니다.
         q_query = text("""
-            SELECT date, eps_growth_yoy, rev_growth_yoy, eps_basic 
+            SELECT date, eps_growth_yoy, rev_growth_yoy, eps_basic, net_income 
             FROM financial_quarterly 
             WHERE ticker = :ticker 
             ORDER BY date DESC LIMIT 1
@@ -176,6 +178,8 @@ def process_stock_fundamentals(engine, ticker, logger):
     # 상세 지표 (DB 저장용)
     raw_eps_growth = q_data.eps_growth_yoy
     raw_rev_growth = q_data.rev_growth_yoy
+    latest_eps = q_data.eps_basic
+    latest_ni = q_data.net_income
     raw_roe = a_data.roe if a_data else None
 
     # 점수 계산용 (None -> 0)
@@ -186,6 +190,16 @@ def process_stock_fundamentals(engine, ticker, logger):
     growth_score = min(max(calc_eps_growth * 2, 0), 60)
     roe_score = min(max(calc_roe * 2.35, 0), 40)
     total_score = round(growth_score + roe_score, 1)
+
+    # ✨ 2. [핵심] 적자 기업 페널티 로직 추가
+    is_deficit = False
+    if (latest_eps is not None and latest_eps < 0) or (latest_ni is not None and latest_ni < 0):
+        is_deficit = True
+
+    if is_deficit:
+        # 적자 기업은 최대 39점(D등급 최고점)으로 점수를 제한합니다.
+        # (적자폭이 줄어든 턴어라운드 상태라도 C등급 이상은 불가)
+        total_score = min(total_score, 39.0)
 
     if total_score >= 80:
         grade = 'A'
@@ -256,13 +270,110 @@ def fetch_and_save_financials():
     logger.info("✅ 모든 재무/펀더멘털 데이터 업데이트 완료")
 
 
+@task(name="Bulk-Grade-Update-SQL")
+def bulk_update_fundamentals_by_sql():
+    logger = get_run_logger()
+    engine = get_engine()
+
+    # 파이썬에서 했던 계산식과 적자 페널티를 SQL 쿼리로 완벽히 구현했습니다.
+    bulk_sql = text("""
+        WITH RankedQ AS (
+            SELECT 
+                ticker, date, eps_growth_yoy, rev_growth_yoy, eps_basic, net_income,
+                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY date DESC) as rn
+            FROM financial_quarterly
+        ),
+        LatestQ AS (
+            SELECT * FROM RankedQ WHERE rn = 1
+        ),
+        RankedA AS (
+            SELECT 
+                ticker, roe,
+                ROW_NUMBER() OVER(PARTITION BY ticker ORDER BY year DESC) as rn
+            FROM financial_annual
+        ),
+        LatestA AS (
+            SELECT * FROM RankedA WHERE rn = 1
+        ),
+        Calculated AS (
+            SELECT 
+                q.ticker,
+                q.date AS latest_q_date,
+                q.eps_growth_yoy AS raw_eps_growth,
+                q.rev_growth_yoy AS raw_rev_growth,
+                a.roe AS raw_roe,
+                q.eps_basic,
+                q.net_income,
+                -- 1. EPS 성장성 점수 (0~60)
+                CASE WHEN COALESCE(q.eps_growth_yoy, 0) * 2 > 60 THEN 60
+                     WHEN COALESCE(q.eps_growth_yoy, 0) * 2 < 0 THEN 0
+                     ELSE COALESCE(q.eps_growth_yoy, 0) * 2 END AS growth_score,
+                -- 2. ROE 수익성 점수 (0~40)
+                CASE WHEN COALESCE(a.roe, 0) * 2.35 > 40 THEN 40
+                     WHEN COALESCE(a.roe, 0) * 2.35 < 0 THEN 0
+                     ELSE COALESCE(a.roe, 0) * 2.35 END AS roe_score
+            FROM LatestQ q
+            LEFT JOIN LatestA a ON q.ticker = a.ticker
+        ),
+        Scored AS (
+            SELECT 
+                ticker,
+                latest_q_date,
+                raw_eps_growth,
+                raw_rev_growth,
+                raw_roe,
+                -- 3. [핵심] 적자 페널티 적용 (합산 점수가 높아도 최대 39점으로 캡)
+                CASE WHEN (eps_basic < 0 OR net_income < 0) AND (growth_score + roe_score) > 39.0 
+                     THEN 39.0 
+                     ELSE (growth_score + roe_score) 
+                END AS total_score
+            FROM Calculated
+        )
+        -- 4. 최종 업데이트 (INSERT ON CONFLICT)
+        INSERT INTO stock_fundamentals (
+            ticker, latest_q_date, eps_growth, rev_growth, roe, 
+            eps_rating, fundamental_grade, updated_at
+        )
+        SELECT 
+            ticker,
+            latest_q_date,
+            raw_eps_growth,
+            raw_rev_growth,
+            raw_roe,
+            ROUND(CAST(total_score AS NUMERIC), 1),
+            CASE 
+                WHEN total_score >= 80 THEN 'A'
+                WHEN total_score >= 60 THEN 'B'
+                WHEN total_score >= 40 THEN 'C'
+                WHEN total_score >= 20 THEN 'D'
+                ELSE 'E'
+            END AS fundamental_grade,
+            CURRENT_TIMESTAMP
+        FROM Scored
+        ON CONFLICT (ticker) DO UPDATE SET
+            latest_q_date = EXCLUDED.latest_q_date,
+            eps_rating = EXCLUDED.eps_rating,
+            fundamental_grade = EXCLUDED.fundamental_grade,
+            eps_growth = EXCLUDED.eps_growth,
+            rev_growth = EXCLUDED.rev_growth,
+            roe = EXCLUDED.roe,
+            updated_at = EXCLUDED.updated_at;
+    """)
+
+    with engine.begin() as conn:
+        result = conn.execute(bulk_sql)
+        logger.info(f"✅ DB 쿼리 일괄 실행 완료! 수천 개의 등급이 즉시 재산정되었습니다. (적용된 row 수: {result.rowcount})")
+
+
 if __name__ == "__main__":
     from prefect import flow
 
 
     @flow(name="Manual-Run")
     def run():
-        fetch_and_save_financials()
+        # fetch_and_save_financials()
+
+        bulk_update_fundamentals_by_sql()
 
 
     run()
