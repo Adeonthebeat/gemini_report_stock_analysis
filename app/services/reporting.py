@@ -249,8 +249,9 @@ def generate_ai_report():
     stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
 
     # 💡 [NEW] AI가 보고서에 쓸 수 있도록 표에 'RS강도'와 'atr_stop_loss' 컬럼 추가!
-    display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'RS강도', '추세상태', 'atr_stop_loss', '비고']]
-    # 마크다운 표 헤더(한국어) 설정
+    # 💡 [NEW] AI가 보고서에 쓸 수 있도록 표에 'RS강도'와 'atr_stop_loss' 컬럼 추가!
+    display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'rs_trend', '추세상태', 'atr_stop_loss', '비고']]
+    # 마크다운 표 헤더(한국어) 설정 (여기서 rs_trend가 'RS강도(추세)'로 예쁘게 이름이 바뀝니다)
     display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
     stock_md = display_stock_df.to_markdown(index=False)
 
