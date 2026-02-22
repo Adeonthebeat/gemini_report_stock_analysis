@@ -124,38 +124,38 @@ def update_rs_indicators():
     engine = get_engine()
 
     with engine.begin() as conn:
-        # 1. 컬럼 추가 (소문자 테이블/컬럼명 사용)
-        cols = ["rs_rating REAL", "stock_grade VARCHAR(10)", "rs_momentum REAL"]
-        for col in cols:
-            try:
-                conn.execute(text(f"ALTER TABLE price_weekly ADD COLUMN IF NOT EXISTS {col}"))
-            except Exception:
-                pass
 
-        # 2. RS 랭킹 업데이트 쿼리 (소문자 적용)
+        # RS 랭킹 업데이트 쿼리 (소문자 적용)
         query = text("""
+            WITH rank_calc AS (
+                -- 1단계: 날짜별 RS Rating 계산
+                SELECT ticker, weekly_date, rs_value,
+                       ROUND(CAST(PERCENT_RANK() OVER (PARTITION BY weekly_date ORDER BY rs_value ASC) * 100 AS NUMERIC), 0) as new_rating
+                FROM price_weekly
+            ),
+            trend_calc AS (
+                -- 2단계: 티커별 과거 데이터를 바탕으로 모멘텀과 4주 평균 계산
+                SELECT ticker, weekly_date, new_rating,
+                       new_rating - LAG(new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC) as new_momentum,
+                       AVG(new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) as avg_4w
+                FROM rank_calc
+            )
+            -- 3단계: 최종 업데이트 (윈도우 함수 없이 값만 매핑)
             UPDATE price_weekly
-            SET rs_rating = sub.new_rating, 
-                rs_momentum = sub.new_rating - LAG(sub.new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC),
-                rs_trend = CASE 
-                    WHEN sub.new_rating >= AVG(sub.new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) 
-                    THEN 'UP' ELSE 'DOWN' 
-                END,
+            SET rs_rating = t.new_rating, 
+                rs_momentum = t.new_momentum,
+                rs_trend = CASE WHEN t.new_rating >= t.avg_4w THEN 'UP' ELSE 'DOWN' END,
                 stock_grade = CASE 
-                    WHEN sub.new_rating >= 90 THEN 'A' 
-                    WHEN sub.new_rating >= 70 THEN 'B'
-                    WHEN sub.new_rating >= 50 THEN 'C' 
-                    WHEN sub.new_rating >= 30 THEN 'D' 
+                    WHEN t.new_rating >= 90 THEN 'A' 
+                    WHEN t.new_rating >= 70 THEN 'B'
+                    WHEN t.new_rating >= 50 THEN 'C' 
+                    WHEN t.new_rating >= 30 THEN 'D' 
                     ELSE 'E' 
                 END
-            FROM (
-                SELECT ticker, weekly_date,
-                    ROUND(CAST(PERCENT_RANK() OVER (PARTITION BY weekly_date ORDER BY rs_value ASC) * 100 AS NUMERIC), 0) as new_rating
-                FROM price_weekly
-            ) AS sub
-            WHERE price_weekly.ticker = sub.ticker 
-              AND price_weekly.weekly_date = sub.weekly_date;
+            FROM trend_calc t
+            WHERE price_weekly.ticker = t.ticker 
+              AND price_weekly.weekly_date = t.weekly_date;
         """)
         conn.execute(query)
 
-    logger.info("✅ RS 지표(Rating, Grade) 업데이트 완료")
+    logger.info("✅ RS 지표(Rating, Grade, Trend) 업데이트 완료")

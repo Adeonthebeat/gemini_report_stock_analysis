@@ -211,6 +211,7 @@ def generate_ai_report():
         SELECT  m.name, w.ticker, d.close as today_close, 
                 ((d.close - d.open) / d.open * 100) as daily_change_pct,
                 w.rs_rating, w.rs_trend, w.atr_stop_loss, w.is_above_200ma, w.deviation_200ma,
+                w.is_vcp, w.is_vol_dry, -- 🚨 [중요] VCP와 거래량 지표를 SELECT에 반드시 추가해야 합니다!
                 f.fundamental_grade, fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
         FROM    price_weekly w
         INNER JOIN stock_master m ON w.ticker = m.ticker
@@ -236,27 +237,28 @@ def generate_ai_report():
         stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
             lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
 
-        def format_weinstein_status(row):
-            dev = row['deviation_200ma'] or 0
-            # [NEW] VCP와 Volume Dry-up이 동시에 뜬 종목은 특수 마킹
-            vcp_signal = " ⭐압축완료" if (row.get('is_vcp') == 1 and row.get('is_vol_dry') == 1) else ""
+    def format_weinstein_status(row):
+        dev = row['deviation_200ma'] or 0
+        # [NEW] VCP와 Volume Dry-up이 동시에 뜬 종목은 특수 마킹
+        vcp_signal = " ⭐압축완료" if (row.get('is_vcp') == 1 and row.get('is_vol_dry') == 1) else ""
 
-            if dev >= 50: return f"과열({dev}%)" + vcp_signal
-            if dev >= 0: return f"2단계({dev}%)" + vcp_signal
-            return "이탈"
+        if dev >= 50: return f"과열({dev}%)" + vcp_signal
+        if dev >= 0: return f"2단계({dev}%)" + vcp_signal
+        return "이탈"
 
-        stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
-        display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'rs_rating', '추세상태', '비고']]
-        stock_md = display_stock_df.to_markdown(index=False)
+    stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
 
-    # --- [STEP 3] ★ 스캐너 통합 (변경된 부분) ---
+    # 💡 [NEW] AI가 보고서에 쓸 수 있도록 표에 'RS강도'와 'atr_stop_loss' 컬럼 추가!
+    display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'RS강도', '추세상태', 'atr_stop_loss', '비고']]
+    # 마크다운 표 헤더(한국어) 설정
+    display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
+    stock_md = display_stock_df.to_markdown(index=False)
+
+    # --- [STEP 3] ★ 스캐너 통합 ---
     try:
-        # [변경] 박스권 스캐너 제거 -> 실적 우상향 스캐너 호출
         steady_data = scan_steady_growth_stocks()
-
         if steady_data:
             steady_df = pd.DataFrame(steady_data)
-            # 프롬프트에 넣기 좋게 컬럼 정리
             steady_df = steady_df[['name', 'close', 'return_3m_pct', 'net_income', 'rev_growth_yoy']]
             steady_df.columns = ['종목명', '종가', '3개월상승(%)', '순이익', '매출성장(%)']
             steady_md = steady_df.to_markdown(index=False)
@@ -269,14 +271,16 @@ def generate_ai_report():
     # --- [STEP 4] 프롬프트 작성 및 AI 요청 ---
     prompt = f"""
     # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
-    # Persona: 윌리엄 오닐, 스탠 와인스테인, 니콜라스 다비스의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
+    # Persona: 윌리엄 오닐, 니콜라스 다비스, 마크 미너비니, 터틀 트레이딩의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
 
     # Data Provided:
     ## [A] Sector Ranking (Top-Down):
     {sector_md}
 
-    ## [B] Leading Stocks (RS 80+):
-    * 추세상태에 '⭐압축완료'가 표시된 종목은 마크 미너비니의 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보입니다.
+    ## [B] Leading Stocks (Breakout Candidates):
+    * 'RS강도(추세)'의 UP 표시는 현재 RS가 4주 평균 이상으로 모멘텀이 살아있음을 뜻한다.
+    * '추세상태'에 '⭐압축완료'가 표시된 종목은 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보이다.
+    * '2-ATR손절선'은 종목 고유의 변동성을 고려한 기계적 리스크 관리 가격이다.
     {stock_md}
 
     ## [C] Steady Growth Stocks (Fundamentals + 3M Trend):
@@ -284,14 +288,14 @@ def generate_ai_report():
     {steady_md}
 
     # Request:
-    1. **시장 브리핑:** [A]를 보고 현재 시장의 돈이 어디로 흐르는지 분석해줘.
-    2. **오늘의 Top Pick:** [B]와 [C] 목록을 종합하여, 지금 가장 안정적이면서도 상승 여력이 있는 5종목을 추천해줘.
-       - 기술적(차트) 분석과 기본적(실적) 분석을 섞어서 설명해줘.
-       - 기술적분석 할 때는 저항선 및 지지선을 활용해서 신규매수타점 / 추가매수타점 / 손절타점을 말해줘
-       - 특히 [B] 목록에서 '⭐압축완료' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 관점에서 강력하게 매수 타점(Pivot Point)을 분석해줘.
-       - 특히 [C] 목록에 있는 종목이라면 "실적이 뒷받침되는 우상향 종목"임을 강조해줘.
-    3. **리스크 관리:** 추천한 종목들의 진입 시 주의할 점이나 손절 가이드.
-    4. **멘토의 한마디:** 꾸준한 우상향 투자의 중요성에 대한 격려.
+    1. **시장 흐름 (Top-Down & Internal RS):** - [A]의 강한 섹터 내에 속한 [B] 종목이 있다면, "섹터의 수급(Internal RS)을 함께 받고 있는 진짜 주도주"라는 관점에서 분석해줘.
+    2. **오늘의 Top Pick (돌파매매 전략):**
+       - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 관점에서 최우선 5종목을 추천해줘.
+       - 베이스(Base) 패턴을 형성한 후 직전 저항선(Pivot Point)을 돌파하는 시점을 **신규 매수 타점(Buy Point)**으로 명시해.
+       - 특히 [B] 목록에서 '⭐압축완료' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
+    3. **리스크 관리 (Dynamic Stop-Loss):**
+       - 두리뭉실한 손절가 대신, 표에 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 작성해.
+    4. **멘토의 일침:** 손실은 짧게, 수익은 길게 가져가는 돌파매매의 핵심 멘탈리티를 강조해줘.
     """
 
     print("🤖 AI 리포트 생성 중...")

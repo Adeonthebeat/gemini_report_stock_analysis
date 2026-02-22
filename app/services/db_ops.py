@@ -115,8 +115,10 @@ def init_db_flow():
                 rs_rating REAL,
                 rs_momentum REAL,
                 stock_grade VARCHAR(10),
-                is_vcp INTEGER DEFAULT 0,       -- [NEW] 변동성 수축 여부
-                is_vol_dry INTEGER DEFAULT 0,   -- [NEW] 거래량 고갈 여부
+                is_vcp INTEGER DEFAULT 0,
+                is_vol_dry INTEGER DEFAULT 0,
+                atr_stop_loss REAL,        -- [NEW] 2-ATR 기준 손절선 추가됨!
+                rs_trend VARCHAR(10),      -- [NEW] 모멘텀 트렌드 추가됨!
                 PRIMARY KEY (ticker, weekly_date)
             );
         """))
