@@ -117,6 +117,7 @@ def classify_status(row):
     else:
         return "🔴 위험"
 
+
 @retry(
     wait=wait_random_exponential(multiplier=2, min=10, max=120),
     stop=stop_after_attempt(10),
@@ -130,6 +131,7 @@ def generate_content_safe(client, model_name, contents):
         contents=contents
     )
     return response.text
+
 
 def send_email(subject, markdown_content, report_date):
     """이메일 발송 함수"""
@@ -206,10 +208,9 @@ def generate_ai_report():
 
     # --- [STEP 2] 주도주 데이터 (Bottom-Up) ---
     stock_query = text("""
-       SELECT  m.name, w.ticker, d.close as today_close, 
+        SELECT  m.name, w.ticker, d.close as today_close, 
                 ((d.close - d.open) / d.open * 100) as daily_change_pct,
-                w.rs_rating, w.is_above_200ma, w.deviation_200ma,
-                w.is_vcp, w.is_vol_dry, -- [NEW] VCP 및 거래량 지표 추가
+                w.rs_rating, w.rs_trend, w.atr_stop_loss, w.is_above_200ma, w.deviation_200ma,
                 f.fundamental_grade, fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
         FROM    price_weekly w
         INNER JOIN stock_master m ON w.ticker = m.ticker
@@ -234,7 +235,7 @@ def generate_ai_report():
         stock_df['비고'] = stock_df.apply(classify_status, axis=1)
         stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
             lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
-        
+
         def format_weinstein_status(row):
             dev = row['deviation_200ma'] or 0
             # [NEW] VCP와 Volume Dry-up이 동시에 뜬 종목은 특수 마킹
@@ -302,7 +303,7 @@ def generate_ai_report():
         )
 
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
-        
+
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         email_subject = f"📈 [Trend Report] {yesterday} 시장 분석 & 실적 우상향주"
 

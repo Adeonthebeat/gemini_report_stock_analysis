@@ -27,7 +27,11 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
 
     # 컬럼 이름이 'Close_AAPL', 'Close_VTI' 형식으로 들어옴
     try:
+        # [수정] 컬럼 이름 매핑
         t_close = df[f'Close_{ticker}']
+        t_high = df[f'High_{ticker}']
+        t_low = df[f'Low_{ticker}']
+        t_vol = df[f'Volume_{ticker}']
         b_close = df[f'Close_{benchmark}']
     except KeyError:
         print(f"❌ {ticker}: 컬럼 찾기 실패. (fetch_combined_data 컬럼명 확인 필요)")
@@ -39,15 +43,8 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
     sma200 = float(t_close.rolling(window=200).mean().iloc[-1])
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
 
-    # [수정] 컬럼 이름 매핑
-    t_close = df[f'Close_{ticker}']
-    t_high = df[f'High_{ticker}']
-    t_low = df[f'Low_{ticker}']
-    t_vol = df[f'Volume_{ticker}']
-    b_close = df[f'Close_{benchmark}']
-
     # ------------------------------------------------------------------
-    # 💡 [NEW] 1. VCP (변동성 수축 필터) 계산
+    # 💡 [NEW] VCP (변동성 수축 필터) 계산
     # 최근 20일간의 하루 진폭(고가-저가) 평균이 60일 진폭 평균 대비 75% 이하로 수축했는지 확인
     # ------------------------------------------------------------------
     daily_range = (t_high - t_low) / t_close
@@ -59,7 +56,7 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
         is_vcp = 1
 
     # ------------------------------------------------------------------
-    # 💡 [NEW] 2. Volume Dry-up (거래량 고갈 필터) 계산
+    # 💡 [NEW] Volume Dry-up (거래량 고갈 필터) 계산
     # 최근 5일 평균 거래량이 50일 평균 거래량의 60% 이하로 씨가 말랐는지 확인
     # ------------------------------------------------------------------
     vol_50d_avg = t_vol.tail(50).mean()
@@ -68,6 +65,21 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
     is_vol_dry = 0
     if vol_50d_avg > 0 and vol_5d_avg < (vol_50d_avg * 0.6):
         is_vol_dry = 1
+
+    # ------------------------------------------------------------------
+    # 💡 [NEW] ATR 14일 계산 및 동적 손절선 (Dynamic Risk Management)
+    # ------------------------------------------------------------------
+    prev_close = t_close.shift(1)
+    tr1 = t_high - t_low
+    tr2 = (t_high - prev_close).abs()
+    tr3 = (t_low - prev_close).abs()
+
+    # 3개 중 가장 큰 값이 True Range
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr_14 = float(tr.tail(14).mean())
+
+    # 2-ATR 기준 손절선 계산
+    atr_stop_loss = round(current_price - (2 * atr_14), 2)
 
     # ------------------------------------------------------------------
     # 날짜 포맷 안전하게 처리하기
@@ -99,7 +111,8 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
 
         # [NEW] 새로 추가된 지표 적재
         "is_vcp": is_vcp,
-        "is_vol_dry": is_vol_dry
+        "is_vol_dry": is_vol_dry,
+        "atr_stop_loss": atr_stop_loss  # [NEW]
     }
 
     return daily_data, weekly_data
@@ -123,7 +136,11 @@ def update_rs_indicators():
         query = text("""
             UPDATE price_weekly
             SET rs_rating = sub.new_rating, 
-                rs_momentum = sub.new_momentum,
+                rs_momentum = sub.new_rating - LAG(sub.new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC),
+                rs_trend = CASE 
+                    WHEN sub.new_rating >= AVG(sub.new_rating) OVER (PARTITION BY ticker ORDER BY weekly_date ASC ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) 
+                    THEN 'UP' ELSE 'DOWN' 
+                END,
                 stock_grade = CASE 
                     WHEN sub.new_rating >= 90 THEN 'A' 
                     WHEN sub.new_rating >= 70 THEN 'B'
@@ -133,8 +150,7 @@ def update_rs_indicators():
                 END
             FROM (
                 SELECT ticker, weekly_date,
-                    ROUND(CAST(PERCENT_RANK() OVER (PARTITION BY weekly_date ORDER BY rs_value ASC) * 100 AS NUMERIC), 0) as new_rating,
-                    rs_value - LAG(rs_value) OVER (PARTITION BY ticker ORDER BY weekly_date ASC) as new_momentum
+                    ROUND(CAST(PERCENT_RANK() OVER (PARTITION BY weekly_date ORDER BY rs_value ASC) * 100 AS NUMERIC), 0) as new_rating
                 FROM price_weekly
             ) AS sub
             WHERE price_weekly.ticker = sub.ticker 

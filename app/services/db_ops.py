@@ -51,11 +51,11 @@ def save_to_sqlite(daily_result, weekly_result):
         conn.execute(text("""
             INSERT INTO price_weekly (
                 ticker, weekly_date, weekly_return, rs_value, 
-                is_above_200ma, deviation_200ma, is_vcp, is_vol_dry
+                is_above_200ma, deviation_200ma, is_vcp, is_vol_dry, atr_stop_loss
             )
             VALUES (
                 :ticker, :weekly_date, :weekly_return, :rs_value, 
-                :is_above_200ma, :deviation_200ma, :is_vcp, :is_vol_dry
+                :is_above_200ma, :deviation_200ma, :is_vcp, :is_vol_dry, :atr_stop_loss
             )
             ON CONFLICT(ticker, weekly_date) 
             DO UPDATE SET 
@@ -63,7 +63,8 @@ def save_to_sqlite(daily_result, weekly_result):
                 is_above_200ma = EXCLUDED.is_above_200ma,
                 deviation_200ma = EXCLUDED.deviation_200ma,
                 is_vcp = EXCLUDED.is_vcp,
-                is_vol_dry = EXCLUDED.is_vol_dry
+                is_vol_dry = EXCLUDED.is_vol_dry,
+                atr_stop_loss = EXCLUDED.atr_stop_loss
         """), weekly_result)
 
     # (선택) 로그가 너무 많으면 주석 처리
