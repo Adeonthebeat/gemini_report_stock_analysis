@@ -49,13 +49,21 @@ def save_to_sqlite(daily_result, weekly_result):
 
         # 2. 주간 지표 데이터 저장 (소문자 테이블/컬럼)
         conn.execute(text("""
-            INSERT INTO price_weekly (ticker, weekly_date, weekly_return, rs_value, is_above_200ma, deviation_200ma)
-            VALUES (:ticker, :weekly_date, :weekly_return, :rs_value, :is_above_200ma, :deviation_200ma)
+            INSERT INTO price_weekly (
+                ticker, weekly_date, weekly_return, rs_value, 
+                is_above_200ma, deviation_200ma, is_vcp, is_vol_dry
+            )
+            VALUES (
+                :ticker, :weekly_date, :weekly_return, :rs_value, 
+                :is_above_200ma, :deviation_200ma, :is_vcp, :is_vol_dry
+            )
             ON CONFLICT(ticker, weekly_date) 
             DO UPDATE SET 
                 rs_value = EXCLUDED.rs_value, 
                 is_above_200ma = EXCLUDED.is_above_200ma,
-                deviation_200ma = EXCLUDED.deviation_200ma
+                deviation_200ma = EXCLUDED.deviation_200ma,
+                is_vcp = EXCLUDED.is_vcp,
+                is_vol_dry = EXCLUDED.is_vol_dry
         """), weekly_result)
 
     # (선택) 로그가 너무 많으면 주석 처리
@@ -96,7 +104,7 @@ def init_db_flow():
 
         # 3. 주간 데이터 (RS 지표 포함)
         conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS price_weekly (
+           CREATE TABLE IF NOT EXISTS price_weekly (
                 ticker VARCHAR(20),
                 weekly_date DATE,
                 weekly_return REAL,
@@ -106,6 +114,8 @@ def init_db_flow():
                 rs_rating REAL,
                 rs_momentum REAL,
                 stock_grade VARCHAR(10),
+                is_vcp INTEGER DEFAULT 0,       -- [NEW] 변동성 수축 여부
+                is_vol_dry INTEGER DEFAULT 0,   -- [NEW] 거래량 고갈 여부
                 PRIMARY KEY (ticker, weekly_date)
             );
         """))

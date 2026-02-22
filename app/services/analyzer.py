@@ -39,6 +39,36 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
     sma200 = float(t_close.rolling(window=200).mean().iloc[-1])
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
 
+    # [수정] 컬럼 이름 매핑
+    t_close = df[f'Close_{ticker}']
+    t_high = df[f'High_{ticker}']
+    t_low = df[f'Low_{ticker}']
+    t_vol = df[f'Volume_{ticker}']
+    b_close = df[f'Close_{benchmark}']
+
+    # ------------------------------------------------------------------
+    # 💡 [NEW] 1. VCP (변동성 수축 필터) 계산
+    # 최근 20일간의 하루 진폭(고가-저가) 평균이 60일 진폭 평균 대비 75% 이하로 수축했는지 확인
+    # ------------------------------------------------------------------
+    daily_range = (t_high - t_low) / t_close
+    volatility_20d = daily_range.tail(20).mean()
+    volatility_60d = daily_range.tail(60).mean()
+
+    is_vcp = 0
+    if volatility_60d > 0 and volatility_20d < (volatility_60d * 0.75):
+        is_vcp = 1
+
+    # ------------------------------------------------------------------
+    # 💡 [NEW] 2. Volume Dry-up (거래량 고갈 필터) 계산
+    # 최근 5일 평균 거래량이 50일 평균 거래량의 60% 이하로 씨가 말랐는지 확인
+    # ------------------------------------------------------------------
+    vol_50d_avg = t_vol.tail(50).mean()
+    vol_5d_avg = t_vol.tail(5).mean()
+
+    is_vol_dry = 0
+    if vol_50d_avg > 0 and vol_5d_avg < (vol_50d_avg * 0.6):
+        is_vol_dry = 1
+
     # ------------------------------------------------------------------
     # 날짜 포맷 안전하게 처리하기
     # 앞단에서 날짜가 문자열로 넘어오든, datetime으로 넘어오든
@@ -61,11 +91,15 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
 
     weekly_data = {
         "ticker": ticker,
-        "weekly_date": formatted_date,  # '2026-02-02' (여기도 똑같이 적용됨)
+        "weekly_date": formatted_date,
         "weekly_return": round(float(weekly_return), 2),
         "rs_value": round(float(rs_score), 2),
         "is_above_200ma": 1 if current_price > sma200 else 0,
-        "deviation_200ma": round(((current_price / sma200) - 1) * 100, 2)
+        "deviation_200ma": round(((current_price / sma200) - 1) * 100, 2),
+
+        # [NEW] 새로 추가된 지표 적재
+        "is_vcp": is_vcp,
+        "is_vol_dry": is_vol_dry
     }
 
     return daily_data, weekly_data

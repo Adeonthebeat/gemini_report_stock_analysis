@@ -206,9 +206,10 @@ def generate_ai_report():
 
     # --- [STEP 2] 주도주 데이터 (Bottom-Up) ---
     stock_query = text("""
-        SELECT  m.name, w.ticker, d.close as today_close, 
+       SELECT  m.name, w.ticker, d.close as today_close, 
                 ((d.close - d.open) / d.open * 100) as daily_change_pct,
                 w.rs_rating, w.is_above_200ma, w.deviation_200ma,
+                w.is_vcp, w.is_vol_dry, -- [NEW] VCP 및 거래량 지표 추가
                 f.fundamental_grade, fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
         FROM    price_weekly w
         INNER JOIN stock_master m ON w.ticker = m.ticker
@@ -236,8 +237,11 @@ def generate_ai_report():
         
         def format_weinstein_status(row):
             dev = row['deviation_200ma'] or 0
-            if dev >= 50: return f"과열({dev}%)"
-            if dev >= 0: return f"2단계({dev}%)"
+            # [NEW] VCP와 Volume Dry-up이 동시에 뜬 종목은 특수 마킹
+            vcp_signal = " ⭐압축완료" if (row.get('is_vcp') == 1 and row.get('is_vol_dry') == 1) else ""
+
+            if dev >= 50: return f"과열({dev}%)" + vcp_signal
+            if dev >= 0: return f"2단계({dev}%)" + vcp_signal
             return "이탈"
 
         stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
@@ -271,6 +275,7 @@ def generate_ai_report():
     {sector_md}
 
     ## [B] Leading Stocks (RS 80+):
+    * 추세상태에 '⭐압축완료'가 표시된 종목은 마크 미너비니의 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보입니다.
     {stock_md}
 
     ## [C] Steady Growth Stocks (Fundamentals + 3M Trend):
@@ -282,6 +287,7 @@ def generate_ai_report():
     2. **오늘의 Top Pick:** [B]와 [C] 목록을 종합하여, 지금 가장 안정적이면서도 상승 여력이 있는 5종목을 추천해줘.
        - 기술적(차트) 분석과 기본적(실적) 분석을 섞어서 설명해줘.
        - 기술적분석 할 때는 저항선 및 지지선을 활용해서 신규매수타점 / 추가매수타점 / 손절타점을 말해줘
+       - 특히 [B] 목록에서 '⭐압축완료' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 관점에서 강력하게 매수 타점(Pivot Point)을 분석해줘.
        - 특히 [C] 목록에 있는 종목이라면 "실적이 뒷받침되는 우상향 종목"임을 강조해줘.
     3. **리스크 관리:** 추천한 종목들의 진입 시 주의할 점이나 손절 가이드.
     4. **멘토의 한마디:** 꾸준한 우상향 투자의 중요성에 대한 격려.
