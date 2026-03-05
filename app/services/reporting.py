@@ -29,12 +29,11 @@ def scan_steady_growth_stocks():
     engine = get_engine()
 
     """
-        [리얼 VCP + 펀더멘털 스캐너]
-        1. 장기 추세: 200일선 위 (상승장)
-        2. 가격 수렴(VCP): 최근 20거래일 동안의 고점과 저점의 차이가 15% 이내로 좁혀짐 (변동성 축소)
-        3. 거래량 축소: 최근 5일 평균 거래량이 50일 평균 거래량보다 작음 (매도세 마름)
-        4. 실적: 흑자 & 성장
-        """
+    [리얼 VCP + 역대 최고가 근접 + 펀더멘털 스캐너]
+    1. 역대 최고가 근접: DB에 저장된 전체 기간 최고가 대비 -10% 이내 위치
+    2. 가격 수렴(VCP): 최근 20거래일 동안의 고점과 저점의 차이가 15% 이내
+    3. 거래량 축소: 단기 거래량이 중기 거래량보다 마름
+    """
     engine = get_engine()
 
     query = text("""
@@ -43,12 +42,13 @@ def scan_steady_growth_stocks():
                 d.ticker,
                 d.date,
                 d.close,
-                -- 장기 이동평균선 (추세 확인용)
                 AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma_200,
-                -- 최근 20일 변동성 (고점과 저점)
-                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) as max_20d,
-                MIN(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) as min_20d,
-                -- 거래량 축소 확인 (단기 vs 중기)
+                
+                -- 🔥 [수정됨] UNBOUNDED PRECEDING을 사용하여 해당 종목의 DB 내 모든 과거 기록 중 최고가를 구함
+                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as high_all_time,
+                
+                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as max_20d,
+                MIN(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as min_20d,
                 AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) as vol_5d,
                 AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as vol_50d
             FROM price_daily d
@@ -60,20 +60,18 @@ def scan_steady_growth_stocks():
             WHERE date = (SELECT MAX(date) FROM price_daily)
         ),
         latest_finance AS (
-            -- 종목별 최신 재무 데이터 추출
-            SELECT f.*
-            FROM financial_quarterly f
+            SELECT f.* FROM financial_quarterly f
             JOIN (
                 SELECT ticker, MAX(date) as max_date 
-                FROM financial_quarterly 
-                GROUP BY ticker
+                FROM financial_quarterly GROUP BY ticker
             ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
         )
         SELECT 
             s.ticker,
             m.name,
             s.close,
-            -- 변동성 폭 (퍼센트)
+            -- 🔥 [수정됨] 역대 최고가 대비 하락률 계산
+            ROUND(CAST((s.close - s.high_all_time) / s.high_all_time * 100 AS numeric), 1) as dist_from_ath_pct,
             ROUND(CAST((s.max_20d - s.min_20d) / s.min_20d * 100 AS numeric), 1) as volatility_pct,
             f.net_income,
             f.rev_growth_yoy,
@@ -82,14 +80,16 @@ def scan_steady_growth_stocks():
         JOIN stock_master m ON s.ticker = m.ticker
         JOIN latest_finance f ON s.ticker = f.ticker
         WHERE 
-            s.close > s.ma_200                                 -- 1. 장기 상승 추세 유지
-            AND (s.max_20d - s.min_20d) / s.min_20d < 0.15     -- 2. 변동성 축소: 최근 20일간 박스권 등락폭이 15% 이내
-            AND s.vol_5d < s.vol_50d                           -- 3. 거래량 축소: 최근 거래량이 50일 평균보다 마름
-            AND f.net_income > 0                               -- 4. 흑자 기업
-            AND (f.rev_growth_yoy > 0 OR f.eps_growth_yoy > 0) -- 5. 매출 또는 이익 성장
-        ORDER BY volatility_pct ASC                            -- 가장 수렴이 잘 된(변동성이 적은) 순서로 정렬
+            s.close > s.ma_200                                 
+            AND s.close >= s.high_all_time * 0.90              -- 🔥 역대 최고가 대비 10% 이내에 위치할 것
+            AND (s.max_20d - s.min_20d) / s.min_20d < 0.15     
+            AND s.vol_5d < s.vol_50d                           
+            AND f.net_income > 0                               
+            AND f.rev_growth_yoy > 0 
+            AND f.eps_growth_yoy > 0 
+        ORDER BY dist_from_ath_pct DESC, volatility_pct ASC   
         LIMIT 10;
-        """)
+    """)
 
     with engine.connect() as conn:
         df = pd.read_sql(query, conn)
