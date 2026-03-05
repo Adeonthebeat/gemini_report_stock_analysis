@@ -25,63 +25,71 @@ from app.core.config import GOOGLE_API_KEY, BASE_DIR
 # 1. [Scanner] 3개월 우상향 실적주 스캐닝 (변경됨)
 # ---------------------------------------------------------
 def scan_steady_growth_stocks():
+
+    engine = get_engine()
+
     """
-    3개월간 꾸준히 오르고(우상향) 실적이 좋은 종목 스캐닝
-    조건:
-    1. 3개월(60거래일) 수익률 > 5% (최소한의 상승세)
-    2. 현재 주가 > 60일 이동평균선 (추세 유지)
-    3. 실적: 순이익 흑자 + (매출 성장 OR EPS 성장)
-    """
+        [리얼 VCP + 펀더멘털 스캐너]
+        1. 장기 추세: 200일선 위 (상승장)
+        2. 가격 수렴(VCP): 최근 20거래일 동안의 고점과 저점의 차이가 15% 이내로 좁혀짐 (변동성 축소)
+        3. 거래량 축소: 최근 5일 평균 거래량이 50일 평균 거래량보다 작음 (매도세 마름)
+        4. 실적: 흑자 & 성장
+        """
     engine = get_engine()
 
     query = text("""
-    WITH price_metrics AS (
+        WITH daily_stats AS (
+            SELECT 
+                d.ticker,
+                d.date,
+                d.close,
+                -- 장기 이동평균선 (추세 확인용)
+                AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma_200,
+                -- 최근 20일 변동성 (고점과 저점)
+                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) as max_20d,
+                MIN(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 20 PRECEDING AND CURRENT ROW) as min_20d,
+                -- 거래량 축소 확인 (단기 vs 중기)
+                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) as vol_5d,
+                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as vol_50d
+            FROM price_daily d
+            JOIN stock_master m ON d.ticker = m.ticker
+            WHERE m.market_type = 'STOCK' 
+        ),
+        latest_stats AS (
+            SELECT * FROM daily_stats
+            WHERE date = (SELECT MAX(date) FROM price_daily)
+        ),
+        latest_finance AS (
+            -- 종목별 최신 재무 데이터 추출
+            SELECT f.*
+            FROM financial_quarterly f
+            JOIN (
+                SELECT ticker, MAX(date) as max_date 
+                FROM financial_quarterly 
+                GROUP BY ticker
+            ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
+        )
         SELECT 
-            d.ticker,
-            d.date,
-            d.close,
-            -- 3개월 전 종가 (약 60 거래일 전)
-            LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
-            -- 60일 이동평균선 (중기 추세선)
-            AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as ma_60
-        FROM price_daily d
-        JOIN stock_master m ON d.ticker = m.ticker
-        WHERE m.market_type = 'STOCK' 
-    ),
-    latest_price AS (
-        SELECT * FROM price_metrics
-        WHERE date = (SELECT MAX(date) FROM price_daily)
-    ),
-    latest_finance AS (
-        -- 종목별 최신 재무 데이터 추출
-        SELECT f.*
-        FROM financial_quarterly f
-        JOIN (
-            SELECT ticker, MAX(date) as max_date 
-            FROM financial_quarterly 
-            GROUP BY ticker
-        ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
-    )
-    SELECT 
-        p.ticker,
-        m.name,
-        p.close,
-        ROUND(CAST((p.close - p.close_3m_ago) / p.close_3m_ago * 100 AS numeric), 1) as return_3m_pct,
-        f.net_income,
-        f.rev_growth_yoy,
-        f.eps_growth_yoy
-    FROM latest_price p
-    JOIN stock_master m ON p.ticker = m.ticker
-    JOIN latest_finance f ON p.ticker = f.ticker
-    WHERE 
-        p.close_3m_ago IS NOT NULL
-        AND p.close >= p.close_3m_ago * 1.20  -- 3개월간 최소 20% 이상 상승
-        AND p.close > p.ma_60                 -- 60일 이평선 위 (추세 살아있음)
-        AND f.net_income > 0                  -- 흑자 기업
-        AND (f.rev_growth_yoy > 0 OR f.eps_growth_yoy > 0) -- 성장 기업 (매출 혹은 이익 성장)
-    ORDER BY return_3m_pct DESC
-    LIMIT 10;
-    """)
+            s.ticker,
+            m.name,
+            s.close,
+            -- 변동성 폭 (퍼센트)
+            ROUND(CAST((s.max_20d - s.min_20d) / s.min_20d * 100 AS numeric), 1) as volatility_pct,
+            f.net_income,
+            f.rev_growth_yoy,
+            f.eps_growth_yoy
+        FROM latest_stats s
+        JOIN stock_master m ON s.ticker = m.ticker
+        JOIN latest_finance f ON s.ticker = f.ticker
+        WHERE 
+            s.close > s.ma_200                                 -- 1. 장기 상승 추세 유지
+            AND (s.max_20d - s.min_20d) / s.min_20d < 0.15     -- 2. 변동성 축소: 최근 20일간 박스권 등락폭이 15% 이내
+            AND s.vol_5d < s.vol_50d                           -- 3. 거래량 축소: 최근 거래량이 50일 평균보다 마름
+            AND f.net_income > 0                               -- 4. 흑자 기업
+            AND (f.rev_growth_yoy > 0 OR f.eps_growth_yoy > 0) -- 5. 매출 또는 이익 성장
+        ORDER BY volatility_pct ASC                            -- 가장 수렴이 잘 된(변동성이 적은) 순서로 정렬
+        LIMIT 10;
+        """)
 
     with engine.connect() as conn:
         df = pd.read_sql(query, conn)
