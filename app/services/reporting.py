@@ -262,27 +262,30 @@ def generate_ai_report():
     display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
     stock_md = display_stock_df.to_markdown(index=False)
 
-# --- [STEP 3] ★ 스캐너 통합 (수정됨) ---
+    # --- [STEP 3] ★ 스캐너 통합 (수정됨) ---
     try:
-        # VCP 스캐너 함수 호출 (함수명은 설정하신 대로 맞추시면 됩니다)
-        steady_data = scan_steady_growth_stocks() 
+        # DB에서 완성된 VCP 쿼리를 실행하는 함수 호출
+        steady_data = scan_steady_growth_stocks()
 
         if steady_data:
             steady_df = pd.DataFrame(steady_data)
-            
-            # 🔥 [수정 포인트] 새로 만든 쿼리의 컬럼명에 맞게 매핑합니다.
-            # KeyError가 발생하지 않도록 DB 출력 컬럼을 그대로 적어줍니다.
-            steady_df = steady_df[['name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy']]
-            
-            # 프롬프트와 이메일에 예쁘게 출력될 한글 헤더로 변경
+
+            # 🔥 [핵심 수정] 새 SQL 쿼리에서 뱉어내는 진짜 컬럼명들로만 묶어줍니다.
+            # return_3m_pct나 net_income 같은 없는 컬럼을 부르면 에러가 납니다.
+            steady_df = steady_df[
+                ['name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy']]
+
+            # 마크다운 표에 예쁘게 출력될 한글 헤더로 변경
             steady_df.columns = ['종목명', '종가', '신고가괴리(%)', '변동성(%)', '매출성장(%)', 'EPS성장(%)']
-            
+
             steady_md = steady_df.to_markdown(index=False)
         else:
             steady_md = "(조건에 맞는 VCP 돌파 임박 종목이 없습니다)"
+
     except Exception as e:
         logger.error(f"스캐너 실행 실패: {e}")
-        steady_md = f"(스캐너 실행 오류: {e})"
+        # 에러가 나더라도 AI가 이상한 소리를 하지 않도록 깔끔하게 처리
+        steady_md = f"(데이터 로드 실패. C 목록 없이 B 목록만으로 분석해주세요. 에러내용: {e})"
 
     # --- [STEP 4] 프롬프트 작성 및 AI 요청 ---
     prompt = f"""
