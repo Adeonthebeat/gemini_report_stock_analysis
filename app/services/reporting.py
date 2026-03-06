@@ -262,16 +262,24 @@ def generate_ai_report():
     display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
     stock_md = display_stock_df.to_markdown(index=False)
 
-    # --- [STEP 3] ★ 스캐너 통합 ---
+# --- [STEP 3] ★ 스캐너 통합 (수정됨) ---
     try:
-        steady_data = scan_steady_growth_stocks()
+        # VCP 스캐너 함수 호출 (함수명은 설정하신 대로 맞추시면 됩니다)
+        steady_data = scan_steady_growth_stocks() 
+
         if steady_data:
             steady_df = pd.DataFrame(steady_data)
-            steady_df = steady_df[['name', 'close', 'return_3m_pct', 'net_income', 'rev_growth_yoy']]
-            steady_df.columns = ['종목명', '종가', '3개월상승(%)', '순이익', '매출성장(%)']
+            
+            # 🔥 [수정 포인트] 새로 만든 쿼리의 컬럼명에 맞게 매핑합니다.
+            # KeyError가 발생하지 않도록 DB 출력 컬럼을 그대로 적어줍니다.
+            steady_df = steady_df[['name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy']]
+            
+            # 프롬프트와 이메일에 예쁘게 출력될 한글 헤더로 변경
+            steady_df.columns = ['종목명', '종가', '신고가괴리(%)', '변동성(%)', '매출성장(%)', 'EPS성장(%)']
+            
             steady_md = steady_df.to_markdown(index=False)
         else:
-            steady_md = "(조건에 맞는 실적 우상향 종목이 없습니다)"
+            steady_md = "(조건에 맞는 VCP 돌파 임박 종목이 없습니다)"
     except Exception as e:
         logger.error(f"스캐너 실행 실패: {e}")
         steady_md = f"(스캐너 실행 오류: {e})"
@@ -303,7 +311,10 @@ def generate_ai_report():
        - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘
        - 베이스(Base) 패턴을 형성한 후 직전 저항선(Pivot Point)을 돌파하는 시점을 신규 매수 타점(Buy Point)**으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘
        - 특히 [B] 목록에서 '⭐' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
-       - [C] 목록의 종목을 추천할 때는 "매물대가 없는 신고가 돌파 직전의 차트와 거래량 급감(매도세 고갈) 현상"을 기술적 관점에서 강하게 어필해줘.
+       - [C] Masterpiece VCP Stocks (Fundamental + Price & Volume Contraction):
+         * 이 목록은 역사적 신고가 대비 10% 이내(신고가괴리)에 위치하여 상단 매물대가 없고, 최근 20일간 변동성이 극도로 축소되며 에너지가 응축된 '돌파 임박(VCP)' 종목들이다.
+         * 또한 순이익, 매출, EPS가 모두 성장하는 무결점 펀더멘털을 갖추고 있다.
+    {steady_md}
     3. **리스크 관리 (Dynamic Stop-Loss):**
        - 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 작성해.
     4. **멘토의 일침:** 손실은 짧게, 수익은 길게 가져가는 돌파매매의 핵심 멘탈리티를 강조해줘.
