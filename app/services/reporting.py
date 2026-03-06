@@ -25,15 +25,6 @@ from app.core.config import GOOGLE_API_KEY, BASE_DIR
 # 1. [Scanner] 3개월 우상향 실적주 스캐닝 (변경됨)
 # ---------------------------------------------------------
 def scan_steady_growth_stocks():
-
-    engine = get_engine()
-
-    """
-    [리얼 VCP + 역대 최고가 근접 + 펀더멘털 스캐너]
-    1. 역대 최고가 근접: DB에 저장된 전체 기간 최고가 대비 -10% 이내 위치
-    2. 가격 수렴(VCP): 최근 20거래일 동안의 고점과 저점의 차이가 15% 이내
-    3. 거래량 축소: 단기 거래량이 중기 거래량보다 마름
-    """
     engine = get_engine()
 
     query = text("""
@@ -43,10 +34,7 @@ def scan_steady_growth_stocks():
                 d.date,
                 d.close,
                 AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma_200,
-                
-                -- 🔥 [수정됨] UNBOUNDED PRECEDING을 사용하여 해당 종목의 DB 내 모든 과거 기록 중 최고가를 구함
                 MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as high_all_time,
-                
                 MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as max_20d,
                 MIN(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as min_20d,
                 AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) as vol_5d,
@@ -65,28 +53,33 @@ def scan_steady_growth_stocks():
                 SELECT ticker, MAX(date) as max_date 
                 FROM financial_quarterly GROUP BY ticker
             ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
+        ),
+        -- 🔥 [NEW] 주간 지표 테이블에서 2-ATR 손절선 가져오기
+        latest_weekly AS (
+            SELECT * FROM price_weekly
+            WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
         )
         SELECT 
             s.ticker,
             m.name,
             s.close,
-            -- 🔥 [수정됨] 역대 최고가 대비 하락률 계산
             ROUND(CAST((s.close - s.high_all_time) / s.high_all_time * 100 AS numeric), 1) as dist_from_ath_pct,
             ROUND(CAST((s.max_20d - s.min_20d) / s.min_20d * 100 AS numeric), 1) as volatility_pct,
+            w.atr_stop_loss,  -- 🔥 AI가 필요로 하는 손절선 데이터
             f.net_income,
             f.rev_growth_yoy,
             f.eps_growth_yoy
         FROM latest_stats s
         JOIN stock_master m ON s.ticker = m.ticker
         JOIN latest_finance f ON s.ticker = f.ticker
+        LEFT JOIN latest_weekly w ON s.ticker = w.ticker
         WHERE 
             s.close > s.ma_200                                 
-            AND s.close >= s.high_all_time * 0.90              -- 🔥 역대 최고가 대비 10% 이내에 위치할 것
-            AND (s.max_20d - s.min_20d) / s.min_20d < 0.15     
-            AND s.vol_5d < s.vol_50d                           
-            AND f.net_income > 0                               
-            AND f.rev_growth_yoy > 0 
-            AND f.eps_growth_yoy > 0 
+            AND s.close >= s.high_all_time * 0.85              -- 신고가 대비 -15% 이내로 완화 (유연한 컵앤핸들/VCP)
+            AND (s.max_20d - s.min_20d) / s.min_20d < 0.20     -- 20일 변동성 20% 이내로 완화
+            AND s.vol_5d < (s.vol_50d * 1.1)                   -- 단기 거래량이 중기 거래량보다 크게 튀지 않을 것
+            AND f.net_income > 0                               -- 흑자 필수
+            AND (f.rev_growth_yoy > 0 OR f.eps_growth_yoy > 0) -- 매출이나 EPS 중 하나는 성장 중일 것
         ORDER BY dist_from_ath_pct DESC, volatility_pct ASC   
         LIMIT 10;
     """)
@@ -97,12 +90,6 @@ def scan_steady_growth_stocks():
     if df.empty:
         print("🔍 [Scanner] 조건에 맞는 실적 우상향 종목이 없습니다.")
         return []
-
-    print(f"\n🚀 [Scanner] 실적 기반 우상향 종목 발견: {len(df)}개")
-    # 콘솔 확인용 출력
-    print(tabulate(df[['name', 'close', 'return_3m_pct', 'rev_growth_yoy']],
-                   headers=['종목명', '종가', '3개월수익률(%)', '매출성장(%)'],
-                   tablefmt='psql', showindex=False))
 
     return df.to_dict('records')
 
@@ -269,67 +256,68 @@ def generate_ai_report():
         if steady_data:
             steady_df = pd.DataFrame(steady_data)
 
-            # 🔥 [수정 포인트 1] 'ticker' 컬럼을 반드시 포함시킵니다.
+            # 🔥 [핵심] SQL에서 가져온 컬럼들을 모두 리스트업. AI가 쓸 'ticker'와 'atr_stop_loss' 반드시 포함!
             steady_df = steady_df[
-                ['ticker', 'name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy']]
+                ['ticker', 'name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy',
+                 'atr_stop_loss']
+            ]
 
-            # 마크다운 표에 예쁘게 출력될 한글 헤더로 변경 ('티커' 추가)
-            steady_df.columns = ['티커', '종목명', '종가', '신고가괴리(%)', '변동성(%)', '매출성장(%)', 'EPS성장(%)']
+            # 마크다운 표에 예쁘게 출력될 한글 헤더 (AI가 읽기 편하게)
+            steady_df.columns = ['티커', '종목명', '종가', '신고가괴리(%)', '변동성(%)', '매출성장(%)', 'EPS성장(%)', '2-ATR손절선']
 
             steady_md = steady_df.to_markdown(index=False)
         else:
-            steady_md = "(조건에 맞는 VCP 돌파 임박 종목이 없습니다)"
+            # 리스트가 비어있을 때 AI가 당황하지 않게 자연스러운 문장 삽입
+            steady_md = "(현재 시장 환경상 VCP 수렴 조건을 완벽히 만족하는 주도주가 없습니다. B 목록에 집중해주세요.)"
 
     except Exception as e:
         logger.error(f"스캐너 실행 실패: {e}")
-        steady_md = f"(데이터 로드 실패. C 목록 없이 B 목록만으로 분석해주세요. 에러내용: {e})"
+        steady_md = f"(데이터 로드 실패. C 목록 없이 B 목록만으로 분석해주세요.)"
 
         # --- [STEP 4] 프롬프트 작성 및 AI 요청 ---
         prompt = f"""
-        # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
-        # Persona: 윌리엄 오닐, 니콜라스 다비스, 마크 미너비니, 터틀 트레이딩의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
+            # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
+            # Persona: 윌리엄 오닐, 니콜라스 다비스, 마크 미너비니, 터틀 트레이딩의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
 
-        # Data Provided:
-        ## [A] Sector Ranking (Top-Down):
-        {sector_md}
+            # Data Provided:
+            ## [A] Sector Ranking (Top-Down):
+            {sector_md}
 
-        ## [B] Leading Stocks (Breakout Candidates):
-        * 'RS강도(추세)'의 UP 표시는 현재 RS가 4주 평균 이상으로 모멘텀이 살아있음을 뜻한다.
-        * '추세상태'에 '⭐'가 표시된 종목은 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보이다.
-        * '2-ATR손절선'은 종목 고유의 변동성을 고려한 기계적 리스크 관리 가격이다.
-        {stock_md}
+            ## [B] Leading Stocks (Breakout Candidates):
+            * 'RS강도(추세)'의 UP 표시는 현재 RS가 4주 평균 이상으로 모멘텀이 살아있음을 뜻한다.
+            * '추세상태'에 '⭐'가 표시된 종목은 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보이다.
+            * '2-ATR손절선'은 종목 고유의 변동성을 고려한 기계적 리스크 관리 가격이다.
+            {stock_md}
 
-        ## [C] Masterpiece VCP Stocks (Fundamental + Price & Volume Contraction):
-        * 이 목록은 역사적 신고가 대비 10% 이내에 위치하며, 최근 20일간 변동성이 15% 이하로 좁아지고, 단기 거래량이 급감하여 매도세가 마른 '돌파 임박(VCP)' 종목들이다.
-        * 동시에 순이익, 매출, EPS가 모두 성장하는 완벽한 펀더멘털을 갖추고 있다.
-        {steady_md}
+            ## [C] Masterpiece VCP Stocks (Fundamental + Price & Volume Contraction):
+            * 이 목록은 역사적 신고가 대비 15% 이내에 위치하며, 최근 20일간 변동성이 20% 이하로 좁아지고, 단기 거래량이 급감하여 매도세가 마른 '돌파 임박(VCP)' 종목들이다.
+            * 동시에 순이익이 흑자이며, 매출 또는 EPS가 성장하고 있는 탄탄한 펀더멘털을 갖추고 있다.
+            * 이 목록 역시 '2-ATR손절선' 데이터가 제공된다.
+            {steady_md}
 
-        # Request:
-        1. **시장 흐름 (Top-Down & Internal RS):** - [A]의 강한 섹터 내에 속한 [B] 종목이 있다면, "섹터의 수급(Internal RS)을 함께 받고 있는 진짜 주도주"라는 관점에서 분석해줘.
-        2. **오늘의 Top Pick (돌파매매 전략):** (표로 작성하지 말고 Markdown 형식으로 할 것)
-           - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘.
-           - 베이스(Base) 패턴을 형성한 후 직전 저항선(Pivot Point)을 돌파하는 시점을 신규 매수 타점(Buy Point)으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘.
-           - 특히 [B] 목록에서 '⭐' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
-           - [C] 목록 종목이 선정될 경우, "신고가 부근에서 에너지가 응축된 무결점 펀더멘털 VCP 종목"임을 강조해줘.
-           # 🔥 [수정 포인트 2] 여기에 있던 중복된 {steady_md} 삭제 완료!
-        3. **리스크 관리 (Dynamic Stop-Loss):**
-           - 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 작성해.
+            # Request:
+            1. **시장 흐름 (Top-Down & Internal RS):** - [A]의 강한 섹터 내에 속한 [B] 종목이 있다면, "섹터의 수급(Internal RS)을 함께 받고 있는 진짜 주도주"라는 관점에서 분석해줘.
+            2. **오늘의 Top Pick (돌파매매 전략):** - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘.
+               - 베이스(Base) 패턴을 형성한 후 직전 저항선(Pivot Point)을 돌파하는 시점을 신규 매수 타점(Buy Point)으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘.
+               - 특히 [B] 목록에서 '⭐' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
+               - [C] 목록 종목이 선정될 경우, "신고가 부근에서 에너지가 응축된 무결점 펀더멘털 VCP 종목"임을 강조해줘.
+            3. **리스크 관리 (Dynamic Stop-Loss):**
+               - 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 강조해.
 
-        [출력 형식 필수 지침]
-        * 경고: 어떠한 경우에도 표(Table) 형식이나 마크다운 테이블(|---|)을 사용하지 마세요.
-        * 이메일 본문으로 바로 사용할 수 있도록, 반드시 계층형 글머리 기호(Hierarchical bullet points)를 사용하고 핵심 키워드에는 굵은 글씨(Bold text)를 적용하여 강조해 주세요.
-        * 정확히 아래의 마크다운 템플릿 구조와 기호를 똑같이 복사해서 내용을 채워주세요.
+            [출력 형식 필수 지침]
+            * 경고: 어떠한 경우에도 표(Table) 형식이나 마크다운 테이블(|---|)을 사용하지 마세요.
+            * 이메일 본문으로 바로 사용할 수 있도록, 반드시 계층형 글머리 기호(Hierarchical bullet points)를 사용하고 핵심 키워드에는 굵은 글씨(Bold text)를 적용하여 강조해 주세요.
+            * 정확히 아래의 마크다운 템플릿 구조와 기호를 똑같이 복사해서 내용을 채워주세요.
 
-        [출력 템플릿]
-        🚀 **오늘의 Top 5 돌파 후보:**
+            [출력 템플릿]
+            🚀 **오늘의 Top 5 돌파 후보:**
 
-        1. **종목명: [티커] ([전체 종목명])**
-            * **선정 이유:** [해당 종목이 선정된 이유를 상세히 서술]
-            * **신규 매수 타점 (Buy Point):** [매수 가격 및 시점 설명]
-            * **추가 매수 타점:** [추가 매수 조건 및 가격]
-            * **손절선:** [제공된 2-ATR 손절선 가격. 만약 데이터가 없다면 차트상 최근 저점이나 변동성을 고려한 합리적인 손절가를 직접 제안할 것]
-            # 🔥 [포인트 3] C 목록에는 2-ATR 데이터가 없으므로 유연하게 대답하도록 지침 수정
-        """
+            1. **종목명: [티커] ([전체 종목명])**
+                * **선정 이유:** [해당 종목이 선정된 이유를 상세히 서술]
+                * **신규 매수 타점 (Buy Point):** [매수 가격 및 시점 설명]
+                * **추가 매수 타점:** [추가 매수 조건 및 가격]
+                * **손절선 (2-ATR):** [제공된 2-ATR 손절선 가격을 반드시 명시할 것]
+            """
 
     print("🤖 AI 리포트 생성 중...")
     try:
