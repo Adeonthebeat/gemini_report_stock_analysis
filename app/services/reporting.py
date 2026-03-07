@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from jinja2 import Environment, FileSystemLoader
 from prefect import task, get_run_logger
 from sqlalchemy import text
-from tabulate import tabulate
 from dotenv import load_dotenv
 
 # [재시도 로직용 라이브러리]
@@ -22,7 +21,7 @@ from app.core.config import GOOGLE_API_KEY, BASE_DIR
 
 
 # ---------------------------------------------------------
-# 1. [Scanner] 3개월 우상향 실적주 스캐닝 (변경됨)
+# 1. [Scanner] 실적 고성장 & 3개월/1주 듀얼 모멘텀 주도주 스캐닝
 # ---------------------------------------------------------
 def scan_steady_growth_stocks():
     engine = get_engine()
@@ -33,12 +32,9 @@ def scan_steady_growth_stocks():
                 d.ticker,
                 d.date,
                 d.close,
-                AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) as ma_200,
-                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as high_all_time,
-                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as max_20d,
-                MIN(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as min_20d,
-                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) as vol_5d,
-                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 49 PRECEDING AND CURRENT ROW) as vol_50d
+                -- 3개월(약 60거래일), 1주일(약 5거래일) 전 종가 계산
+                LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
+                LAG(d.close, 5) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_1w_ago
             FROM price_daily d
             JOIN stock_master m ON d.ticker = m.ticker
             WHERE m.market_type = 'STOCK' 
@@ -54,7 +50,6 @@ def scan_steady_growth_stocks():
                 FROM financial_quarterly GROUP BY ticker
             ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
         ),
-        -- 🔥 [NEW] 주간 지표 테이블에서 2-ATR 손절선 가져오기
         latest_weekly AS (
             SELECT * FROM price_weekly
             WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
@@ -63,9 +58,9 @@ def scan_steady_growth_stocks():
             s.ticker,
             m.name,
             s.close,
-            ROUND(CAST((s.close - s.high_all_time) / s.high_all_time * 100 AS numeric), 1) as dist_from_ath_pct,
-            ROUND(CAST((s.max_20d - s.min_20d) / s.min_20d * 100 AS numeric), 1) as volatility_pct,
-            w.atr_stop_loss,  -- 🔥 AI가 필요로 하는 손절선 데이터
+            ROUND(CAST((s.close - s.close_3m_ago) / s.close_3m_ago * 100 AS numeric), 1) as return_3m_pct,
+            ROUND(CAST((s.close - s.close_1w_ago) / s.close_1w_ago * 100 AS numeric), 1) as return_1w_pct,
+            w.atr_stop_loss,  -- AI 손절선 데이터 유지
             f.net_income,
             f.rev_growth_yoy,
             f.eps_growth_yoy
@@ -74,13 +69,21 @@ def scan_steady_growth_stocks():
         JOIN latest_finance f ON s.ticker = f.ticker
         LEFT JOIN latest_weekly w ON s.ticker = w.ticker
         WHERE 
-            s.close > s.ma_200                                 
-            AND s.close >= s.high_all_time * 0.85              -- 신고가 대비 -15% 이내로 완화 (유연한 컵앤핸들/VCP)
-            AND (s.max_20d - s.min_20d) / s.min_20d < 0.20     -- 20일 변동성 20% 이내로 완화
-            AND s.vol_5d < (s.vol_50d * 1.1)                   -- 단기 거래량이 중기 거래량보다 크게 튀지 않을 것
-            AND f.net_income > 0                               -- 흑자 필수
-            AND (f.rev_growth_yoy > 0 OR f.eps_growth_yoy > 0) -- 매출이나 EPS 중 하나는 성장 중일 것
-        ORDER BY dist_from_ath_pct DESC, volatility_pct ASC   
+            s.close_3m_ago IS NOT NULL
+            AND s.close_1w_ago IS NOT NULL
+
+            -- 🔥 1. 실적 우수 조건 (단순 >0 을 넘어 15% 이상 고성장으로 컷 설정)
+            AND f.net_income > 0                               
+            AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
+
+            -- 🔥 2. 중기 모멘텀 (3개월 동안 15% 이상 상승한 우상향 종목)
+            AND s.close >= s.close_3m_ago * 1.15
+
+            -- 🔥 3. 단기 모멘텀 (최근 1주일 동안 3% 이상 급등한 종목)
+            AND s.close >= s.close_1w_ago * 1.03
+
+        -- 단기 폭발력이 강하면서 중기 추세도 좋은 순으로 정렬
+        ORDER BY return_1w_pct DESC, return_3m_pct DESC
         LIMIT 10;
     """)
 
@@ -88,7 +91,7 @@ def scan_steady_growth_stocks():
         df = pd.read_sql(query, conn)
 
     if df.empty:
-        print("🔍 [Scanner] 조건에 맞는 실적 우상향 종목이 없습니다.")
+        print("🔍 [Scanner] 조건에 맞는 실적 모멘텀 종목이 없습니다.")
         return []
 
     return df.to_dict('records')
@@ -230,7 +233,7 @@ def generate_ai_report():
     else:
         stock_df['비고'] = stock_df.apply(classify_status, axis=1)
         stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
-        lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
+            lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
 
     def format_weinstein_status(row):
         dev = row['deviation_200ma'] or 0
@@ -256,19 +259,20 @@ def generate_ai_report():
         if steady_data:
             steady_df = pd.DataFrame(steady_data)
 
-            # 🔥 [핵심] SQL에서 가져온 컬럼들을 모두 리스트업. AI가 쓸 'ticker'와 'atr_stop_loss' 반드시 포함!
+            # 🔥 [핵심] 앞서 수정한 SQL 쿼리에 맞춰 추출할 컬럼 목록 업데이트
+            # VCP용 지표(고점괴리, 변동성) 대신 수익률 지표(3개월, 1주일)를 가져옵니다.
             steady_df = steady_df[
-                ['ticker', 'name', 'close', 'dist_from_ath_pct', 'volatility_pct', 'rev_growth_yoy', 'eps_growth_yoy',
+                ['ticker', 'name', 'close', 'return_3m_pct', 'return_1w_pct', 'rev_growth_yoy', 'eps_growth_yoy',
                  'atr_stop_loss']
             ]
 
             # 마크다운 표에 예쁘게 출력될 한글 헤더 (AI가 읽기 편하게)
-            steady_df.columns = ['티커', '종목명', '종가', '신고가괴리(%)', '변동성(%)', '매출성장(%)', 'EPS성장(%)', '2-ATR손절선']
+            steady_df.columns = ['티커', '종목명', '종가', '3개월수익률(%)', '1주일수익률(%)', '매출성장(%)', 'EPS성장(%)', '2-ATR손절선']
 
             steady_md = steady_df.to_markdown(index=False)
         else:
             # 리스트가 비어있을 때 AI가 당황하지 않게 자연스러운 문장 삽입
-            steady_md = "(현재 시장 환경상 VCP 수렴 조건을 완벽히 만족하는 주도주가 없습니다. B 목록에 집중해주세요.)"
+            steady_md = "(현재 시장 환경상 실적 고성장과 듀얼 모멘텀 조건을 완벽히 만족하는 주도주가 없습니다. B 목록에 집중해주세요.)"
 
     except Exception as e:
         logger.error(f"스캐너 실행 실패: {e}")
@@ -289,18 +293,18 @@ def generate_ai_report():
         * '2-ATR손절선'은 종목 고유의 변동성을 고려한 기계적 리스크 관리 가격이다.
         {stock_md}
 
-        ## [C] Masterpiece VCP Stocks (Fundamental + Price & Volume Contraction):
-        * 이 목록은 역사적 신고가 대비 15% 이내에 위치하며, 최근 20일간 변동성이 20% 이하로 좁아지고, 단기 거래량이 급감하여 매도세가 마른 '돌파 임박(VCP)' 종목들이다.
-        * 동시에 순이익이 흑자이며, 매출 또는 EPS가 성장하고 있는 탄탄한 펀더멘털을 갖추고 있다.
+        ## [C] High-Growth Momentum Stocks (Fundamental + Dual Momentum):
+        * 이 목록은 매출 또는 EPS가 15% 이상 고성장 중이며, 최근 3개월간 15% 이상 우상향(중기 추세)하고, 1주일 사이에도 3% 이상 상승(단기 수급 폭발)한 '실적 기반 주도주 급등 패턴' 종목들이다.
+        * 중기적인 추세가 살아있는 상태에서 단기적으로 스마트 머니가 강력하게 유입되고 있는 우량주들이다.
         * 이 목록 역시 '2-ATR손절선' 데이터가 제공된다.
         {steady_md}
 
         # Request:
         1. **시장 흐름 (Top-Down & Internal RS):** - [A]의 강한 섹터 내에 속한 [B] 종목이 있다면, "섹터의 수급(Internal RS)을 함께 받고 있는 진짜 주도주"라는 관점에서 분석해줘.
-        2. **오늘의 Top Pick (돌파매매 전략):** - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘.
-           - 베이스(Base) 패턴을 형성한 후 직전 저항선(Pivot Point)을 돌파하는 시점을 신규 매수 타점(Buy Point)으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘.
+        2. **오늘의 Top Pick (돌파 및 모멘텀 매매 전략):** - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 및 '모멘텀 추종' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘.
+           - 직전 저항선(Pivot Point)을 돌파하는 시점이나 폭발 전 단기 눌림목을 신규 매수 타점(Buy Point)으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘.
            - 특히 [B] 목록에서 '⭐' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
-           - [C] 목록 종목이 선정될 경우, "신고가 부근에서 에너지가 응축된 무결점 펀더멘털 VCP 종목"임을 강조해줘.
+           - [C] 목록 종목이 선정될 경우, "실적 고성장을 바탕으로 중/단기 수급이 모두 쏠리고 있는 진짜 주도주"임을 강조해줘.
         3. **리스크 관리 (Dynamic Stop-Loss):**
            - 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 강조해.
 
@@ -310,14 +314,14 @@ def generate_ai_report():
         * 정확히 아래의 마크다운 템플릿 구조와 기호를 똑같이 복사해서 내용을 채워주세요.
 
         [출력 템플릿]
-        🚀 **오늘의 Top 5 돌파 후보:**
+        🚀 **오늘의 Top 5 주도주 (돌파 & 모멘텀):**
 
         1. **종목명: [티커] ([전체 종목명])**
             * **선정 이유:** [해당 종목이 선정된 이유를 상세히 서술]
             * **신규 매수 타점 (Buy Point):** [매수 가격 및 시점 설명]
             * **추가 매수 타점:** [추가 매수 조건 및 가격]
             * **손절선 (2-ATR):** [제공된 2-ATR 손절선 가격을 반드시 명시할 것]
-        """
+    """
 
     print("🤖 AI 리포트 생성 중...")
     try:
