@@ -1,7 +1,6 @@
 # [수정된 app/main.py]
 import warnings
-from asyncio import as_completed
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yfinance as yf # 날짜 확인용
 from datetime import datetime
@@ -83,7 +82,7 @@ def stock_analysis_pipeline():
     skip_count = 0  # 스킵 카운트 추가
 
     # 1. 단일 종목 처리 함수 (리스트에 넣을 데이터를 반환만 함)
-    def process_single_ticker(row):
+    def process_ticker(row):
         ticker = row['ticker']
         df = fetch_combined_data(ticker, row.get('market_type', 'STOCK'))
         if df.empty: return None
@@ -94,22 +93,30 @@ def stock_analysis_pipeline():
         return daily, weekly
 
     # 2. [병렬 처리] 워커 5명이 동시에 데이터를 마구잡이로 캐옴 (네트워크 I/O 최적화)
-    logger.info("🚀 [1단계] 일꾼 5명이 동시에 데이터를 수집합니다...")
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(process_single_ticker, row): row for row in ticker_list}
+    logger.info("🚀 [1단계] 일꾼 10명이 동시에 데이터를 수집합니다...")
+    # 워커 10명 투입! (max_workers=10)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(process_ticker, row): row for row in ticker_list}
 
+        # 먼저 다운로드가 끝나는 종목부터 바구니에 담기
         for future in as_completed(futures):
-            result = future.result()
-            if result:  # (daily, weekly) 튜플을 받아옴
-                daily_bulk_data.append(result[0])  # 메모리에 차곡차곡 적재
-                weekly_bulk_data.append(result[1])
+            success, ticker, daily, weekly = future.result()
+            if success:
+                daily_bulk_data.append(daily)
+                weekly_bulk_data.append(weekly)
                 success_count += 1
+            else:
+                fail_count += 1
 
-    # 3. [통째로 넣기] 모인 데이터를 DB에 단 한 번의 쿼리로 꽂아버림 (DB I/O 최적화)
+    # 바구니에 담긴 데이터를 DB에 단 1번의 쿼리로 꽂아버리기!
     if daily_bulk_data and weekly_bulk_data:
-        logger.info(f"💾 [2단계] 수집된 {success_count}개 데이터를 DB에 한 방에 저장합니다 (Bulk Insert)...")
-        save_to_sqlite_bulk(daily_bulk_data, weekly_bulk_data)
+        logger.info(f"💾 계산 완료된 {success_count}개 데이터를 DB에 일괄 저장합니다 (Bulk Insert)...")
+        try:
+            save_to_sqlite_bulk(daily_bulk_data, weekly_bulk_data)
+        except Exception as e:
+            logger.error(f"❌ DB 벌크 저장 실패: {e}")
 
+    logger.info(f"📈 작업 완료 Summary (성공: {success_count} / 실패: {fail_count})")
     # 결과 요약
     logger.info(f"📈 작업 완료 Summary")
     logger.info(f"   - 성공(신규/갱신): {success_count}")
