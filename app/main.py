@@ -1,5 +1,8 @@
 # [수정된 app/main.py]
 import warnings
+from asyncio import as_completed
+from concurrent.futures import ThreadPoolExecutor
+
 import yfinance as yf # 날짜 확인용
 from datetime import datetime
 
@@ -9,7 +12,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from prefect import flow, get_run_logger
 
 # [수정] get_finished_tickers 추가 임포트
-from app.services.db_ops import get_tickers, save_to_sqlite, get_finished_tickers
+from app.services.db_ops import get_tickers, get_finished_tickers, save_to_sqlite_bulk
 from app.services.data_fetcher import check_market_data_update, fetch_combined_data
 from app.services.analyzer import calculate_metrics, update_rs_indicators
 from app.services.reporting import generate_ai_report
@@ -59,7 +62,7 @@ def stock_analysis_pipeline():
 
     # 3. 재무데이터 수집 (토요일)
     today_weekday = datetime.now().weekday()
-    if today_weekday == 5:
+    if today_weekday in (4, 5) :
         logger.info("📅 오늘은 토요일! 재무제표/펀더멘털 데이터를 전체 갱신합니다.")
         try:
             fetch_and_save_financials()
@@ -70,43 +73,48 @@ def stock_analysis_pipeline():
 
     # 4. 데이터 수집 루프
     logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
-    
+
+    # [추가] 통째로 넣을 데이터를 담을 리스트 바구니 준비
+    daily_bulk_data = []
+    weekly_bulk_data = []
+
     success_count = 0
     fail_count = 0
     skip_count = 0  # 스킵 카운트 추가
 
-    for row in ticker_list:
+    # 1. 단일 종목 처리 함수 (리스트에 넣을 데이터를 반환만 함)
+    def process_single_ticker(row):
         ticker = row['ticker']
-        market_type = row.get('market_type', 'STOCK')
+        df = fetch_combined_data(ticker, row.get('market_type', 'STOCK'))
+        if df.empty: return None
 
-        try:
-            df = fetch_combined_data(ticker, market_type)
+        daily, weekly = calculate_metrics(df, ticker)
+        if daily is None or weekly is None: return None
 
-            if df.empty:
-                logger.warning(f"⚠️ {ticker}: 수집된 데이터 없음 (Skip)")
-                fail_count += 1
-                continue
+        return daily, weekly
 
-            daily, weekly = calculate_metrics(df, ticker)
-            
-            if daily is None or weekly is None:
-                logger.warning(f"⚠️ {ticker}: 지표 계산 실패")
-                fail_count += 1
-                continue
+    # 2. [병렬 처리] 워커 5명이 동시에 데이터를 마구잡이로 캐옴 (네트워크 I/O 최적화)
+    logger.info("🚀 [1단계] 일꾼 5명이 동시에 데이터를 수집합니다...")
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(process_single_ticker, row): row for row in ticker_list}
 
-            save_to_sqlite(daily, weekly)
-            success_count += 1
-            
-        except Exception as e:
-            logger.error(f"❌ {ticker} 처리 중 에러: {e}")
-            fail_count += 1
+        for future in as_completed(futures):
+            result = future.result()
+            if result:  # (daily, weekly) 튜플을 받아옴
+                daily_bulk_data.append(result[0])  # 메모리에 차곡차곡 적재
+                weekly_bulk_data.append(result[1])
+                success_count += 1
 
-    # 결과 요약에 Skip 정보 추가
+    # 3. [통째로 넣기] 모인 데이터를 DB에 단 한 번의 쿼리로 꽂아버림 (DB I/O 최적화)
+    if daily_bulk_data and weekly_bulk_data:
+        logger.info(f"💾 [2단계] 수집된 {success_count}개 데이터를 DB에 한 방에 저장합니다 (Bulk Insert)...")
+        save_to_sqlite_bulk(daily_bulk_data, weekly_bulk_data)
+
+    # 결과 요약
     logger.info(f"📈 작업 완료 Summary")
     logger.info(f"   - 성공(신규/갱신): {success_count}")
     logger.info(f"   - 스킵(이미완료): {skip_count}")
     logger.info(f"   - 실패: {fail_count}")
-
     # 5. 후처리 및 리포트
     logger.info("📊 RS 지표 업데이트 및 리포트 작성을 시작합니다.")
     try:

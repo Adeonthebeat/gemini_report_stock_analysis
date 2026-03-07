@@ -71,6 +71,31 @@ def save_to_sqlite(daily_result, weekly_result):
     # logger.info(f"Saved: {daily_result['ticker']}")
 
 
+@task(name="Save-Data-Bulk")
+def save_to_sqlite_bulk(daily_list, weekly_list):
+    logger = get_run_logger()
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        # daily_list 통째로 삽입
+        conn.execute(text("""
+            INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
+            VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
+            ON CONFLICT(ticker, date) DO UPDATE SET 
+                close = EXCLUDED.close, volume = EXCLUDED.volume,
+                high = EXCLUDED.high, low = EXCLUDED.low
+        """), daily_list)
+
+        # weekly_list 통째로 삽입
+        conn.execute(text("""
+            INSERT INTO price_weekly (ticker, weekly_date, weekly_return, rs_value, is_above_200ma, deviation_200ma, atr_14)
+            VALUES (:ticker, :weekly_date, :weekly_return, :rs_value, :is_above_200ma, :deviation_200ma, :atr_14)
+            ON CONFLICT(ticker, weekly_date) DO UPDATE SET 
+                rs_value = EXCLUDED.rs_value, is_above_200ma = EXCLUDED.is_above_200ma,
+                deviation_200ma = EXCLUDED.deviation_200ma, atr_14 = EXCLUDED.atr_14
+        """), weekly_list)
+
+
 @flow(name="Initialize-DB")
 def init_db_flow():
     """
@@ -168,11 +193,11 @@ def get_finished_tickers(target_date_str):
     Set 자료형으로 반환하여 검색 속도를 높입니다.
     """
     engine = get_engine()
-    
+
     query = text("SELECT ticker FROM price_daily WHERE date = :date")
-    
+
     with engine.connect() as conn:
         result = conn.execute(query, {"date": target_date_str}).fetchall()
-        
+
     # 예: {'AAPL', 'TSLA', 'NVDA'} 형태의 집합(Set)으로 반환
     return {row[0] for row in result}

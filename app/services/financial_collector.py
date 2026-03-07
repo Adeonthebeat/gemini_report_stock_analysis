@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
 import yfinance as yf
 import pandas as pd
 from sqlalchemy import text
@@ -28,17 +31,19 @@ def process_quarterly_data(engine, ticker, stock_obj, logger):
     revenue = df.get('Total Revenue', pd.Series(dtype=float))
     eps_basic = df.get('Basic EPS', pd.Series(dtype=float))
 
-    # 2. 성장률 계산 (YoY) - 이제 정렬되었으므로 정상 작동
-    # 데이터가 5개 미만이면 앞쪽은 어쩔 수 없이 NaN이 뜹니다.
-    # ✨ 수정된 코드 (절대값 분모 사용):
-    # (현재 - 과거) / abs(과거) 공식을 사용합니다.
-    rev_growth = (revenue.diff(periods=4) / revenue.shift(periods=4).abs()) * 100
+    # 2. 성장률 계산 (YoY)
+    rev_growth = revenue.pct_change(periods=4, fill_method=None) * 100
+    # [핵심 수정] 과거 매출이 0이어서 무한대(inf)가 나온 경우 NaN으로 안전하게 치환
+    rev_growth = rev_growth.replace([np.inf, -np.inf], np.nan)
 
     if not eps_basic.empty and not eps_basic.isna().all():
-        real_eps_growth = (eps_basic.diff(periods=4) / eps_basic.shift(periods=4).abs()) * 100
+        real_eps_growth = eps_basic.pct_change(periods=4, fill_method=None) * 100
+        # [핵심 수정] 무한대 치환
+        real_eps_growth = real_eps_growth.replace([np.inf, -np.inf], np.nan)
     else:
-        real_eps_growth = (net_income.diff(periods=4) / net_income.shift(periods=4).abs()) * 100
-
+        real_eps_growth = net_income.pct_change(periods=4, fill_method=None) * 100
+        # [핵심 수정] 무한대 치환
+        real_eps_growth = real_eps_growth.replace([np.inf, -np.inf], np.nan)
     rows_to_insert = []
 
     # 다시 최신순으로 돌면서 저장 (선택 사항이나 디버깅 편의상)
@@ -258,14 +263,25 @@ def fetch_and_save_financials():
 
     logger.info(f"💰 재무제표 수집 시작: 총 {len(tickers)}개 종목")
 
-    for ticker in tickers:
+    # 단일 종목 처리 함수 정의
+    def process_single_financial(ticker):
         try:
             stock = yf.Ticker(ticker)
             process_quarterly_data(engine, ticker, stock, logger)
             process_annual_data(engine, ticker, stock, logger)
             process_stock_fundamentals(engine, ticker, logger)
+            return True, ticker
         except Exception as e:
-            logger.error(f"❌ {ticker} 처리 실패: {e}")
+            return False, f"{ticker} 실패: {e}"
+
+    # 워커 10개를 투입하여 동시 다발적으로 수집
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(process_single_financial, t): t for t in tickers}
+
+        for future in as_completed(futures):
+            success, msg = future.result()
+            if not success:
+                logger.error(f"❌ {msg}")
 
     logger.info("✅ 모든 재무/펀더멘털 데이터 업데이트 완료")
 

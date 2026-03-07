@@ -5,65 +5,84 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Daily Stock Report</title>
     <style>
-        /* 이메일 클라이언트를 위한 기본 리셋 */
         body { margin: 0; padding: 0; background-color: #f4f4f7; font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
-        table { border-collapse: collapse; width: 100%; }
-
-        /* 컨테이너: 종이 같은 느낌 */
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-            margin-top: 20px;
-            margin-bottom: 20px;
-        }
-
-        /* 헤더: 브랜드 컬러 (남색/파랑) */
-        .header {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: #ffffff;
-            padding: 30px 20px;
-            text-align: center;
-        }
+        .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; padding: 30px 20px; text-align: center; }
         .header h1 { margin: 0; font-size: 24px; letter-spacing: 1px; }
         .header p { margin: 5px 0 0; font-size: 14px; opacity: 0.8; }
 
-        /* 본문 스타일 */
         .content { padding: 30px; line-height: 1.6; color: #333333; }
+        h2, h3 { color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 30px; font-size: 20px; }
+        strong { color: #d35400; } /* 강조 텍스트 오렌지색 톤 */
 
-        /* 마크다운 변환 요소 스타일링 */
-        h2 { color: #1e3c72; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 30px; font-size: 20px; }
-        h3 { color: #e67e22; margin-top: 25px; font-size: 18px; }
-        strong { color: #d35400; background-color: #fff8e1; padding: 0 2px; }
-        ul { padding-left: 20px; }
-        li { margin-bottom: 8px; }
-
-        /* 표 스타일 (주식 데이터) */
-        table { width: 100%; margin: 20px 0; font-size: 14px; border: 1px solid #ddd; }
-        th { background-color: #f8f9fa; color: #555; font-weight: bold; padding: 12px; text-align: left; border-bottom: 2px solid #ddd; }
-        td { padding: 10px; border-bottom: 1px solid #eee; color: #555; }
-        tr:nth-child(even) { background-color: #fcfcfc; }
-        tr:hover { background-color: #f1f1f1; }
-
-        /* 푸터 */
-        .footer {
-            background-color: #f4f4f7;
-            padding: 20px;
-            text-align: center;
-            font-size: 12px;
-            color: #888;
-            border-top: 1px solid #eee;
+        /* 💡 여기가 핵심! 계층형 리스트를 예쁜 카드로 바꾸는 마법 */
+        /* Top 5 메인 숫자 리스트 (1. 종목명...) */
+        .content ol {
+            list-style-type: none; /* 기본 숫자 제거 */
+            counter-reset: item;
+            padding-left: 0;
         }
+        .content ol > li {
+            position: relative;
+            background: #f8f9fa; /* 옅은 회색 배경 */
+            border: 1px solid #e1e4e8;
+            border-left: 5px solid #1e3c72; /* 좌측 파란색 포인트 바 */
+            margin-bottom: 20px;
+            padding: 20px 20px 20px 45px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        /* 가짜 숫자를 만들어서 예쁘게 디자인 */
+        .content ol > li::before {
+            content: counter(item);
+            counter-increment: item;
+            position: absolute;
+            left: 10px;
+            top: 18px;
+            background: #1e3c72;
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        /* 내부의 하위 글머리 기호 (* 선정 이유...) */
+        .content ol > li > ul {
+            list-style-type: disc;
+            padding-left: 20px;
+            margin-top: 15px;
+            font-weight: normal; /* 본문은 얇게 */
+            font-size: 15px;
+        }
+        .content ol > li > ul > li {
+            margin-bottom: 8px;
+            color: #444;
+        }
+
+        /* 멘토의 한마디 등을 위한 인용구 스타일 */
+        blockquote {
+            background: #fff8e1;
+            border-left: 4px solid #f39c12;
+            margin: 20px 0;
+            padding: 15px 20px;
+            font-style: italic;
+            color: #555;
+            border-radius: 4px;
+        }
+
+        .footer { background-color: #f4f4f7; padding: 20px; text-align: center; font-size: 12px; color: #888; border-top: 1px solid #eee; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>📈 Morning Brief</h1>
-            <p>{{ date }} 기준 | AI 주도주 분석 리포트</p>
+            <h1>📈 AI Mentor Brief</h1>
+            <p>{{ date }} | Breakout & Momentum Strategy</p>
         </div>
 
         <div class="content">
@@ -71,8 +90,8 @@
         </div>
 
         <div class="footer">
-            <p>본 메일은 자동화 시스템에 의해 발송되었습니다.</p>
-            <p>© 2026 adeStock Analytics. All rights reserved.</p>
+            <p>본 멘토링 리포트는 시스템에 의해 자동 분석/발송되었습니다.</p>
+            <p>※ 투자의 책임은 본인에게 있으며, 기계적 손절매를 엄수하십시오.</p>
         </div>
     </div>
 </body>

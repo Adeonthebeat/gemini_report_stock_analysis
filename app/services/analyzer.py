@@ -32,13 +32,13 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
         t_high = df[f'High_{ticker}']
         t_low = df[f'Low_{ticker}']
         t_vol = df[f'Volume_{ticker}']
-        b_close = df[f'Close_{benchmark}']
     except KeyError:
         print(f"❌ {ticker}: 컬럼 찾기 실패. (fetch_combined_data 컬럼명 확인 필요)")
         return None, None
 
     # 지표 계산
-    rs_score = (calc_weighted_return(t_close) - calc_weighted_return(b_close)) * 100
+    rs_score = calc_weighted_return(t_close) * 100
+
     current_price = float(t_close.iloc[-1])
     sma200 = float(t_close.rolling(window=200).mean().iloc[-1])
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
