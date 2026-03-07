@@ -46,71 +46,57 @@ def check_market_data_update(benchmark='VTI'):
     return False # 업데이트 진행
 
 
-def fetch_combined_data(ticker, market_type='STOCK'):
+def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
+    """
+    [이전 버전 복구]
+    - 리스트를 이용한 일괄 다운로드 방식
+    - yfinance의 기본 MultiIndex 구조 활용
+    """
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=730)
 
-    print(f"📥 {ticker} ({market_type}) 데이터 수집 중... (~{end_date.strftime('%Y-%m-%d')})")
+    print(f"📥 {ticker} 데이터 수집 중... (이전 버전 방식)")
 
     try:
-        df = yf.download(ticker, start=start_date, end=end_date,
-                         interval='1d', auto_adjust=True, progress=False)
+        # 티커와 벤치마크를 리스트로 묶어 한 번에 다운로드
+        df = yf.download([ticker, benchmark], start=start_date, end=end_date,
+                         interval='1d', auto_adjust=True, progress=False, group_by='ticker')
 
         if df.empty:
-            print(f"⚠️ {ticker}: 다운로드된 데이터가 없습니다.")
             return pd.DataFrame()
 
+        # 타임존 제거
         try:
             df.index = df.index.tz_localize(None)
-        except Exception:
+        except:
             pass
 
         df.index.name = 'Date'
 
-        # 🔥 [핵심 수정] MultiIndex 여부를 확인하고 안전하게 평탄화합니다.
+        # MultiIndex 평탄화 (이전 방식)
         if isinstance(df.columns, pd.MultiIndex):
             new_columns = []
             for col in df.columns:
-                c1 = str(col[0])
-                c2 = str(col[1])
-                # ('Close', 'AAPL') 이든 ('AAPL', 'Close') 이든 무조건 'Close_AAPL'로 만듦
-                if c1 == ticker:
-                    new_columns.append(f"{c2}_{ticker}")
-                elif c2 == ticker:
-                    new_columns.append(f"{c1}_{ticker}")
+                c1, c2 = str(col[0]), str(col[1])
+                # Close_AAPL 또는 Close_VTI 형태로 통일
+                if c1 == ticker or c1 == benchmark:
+                    new_columns.append(f"{c2}_{c1}")
                 else:
-                    new_columns.append(f"{c1}_{ticker}")
+                    new_columns.append(f"{c1}_{c2}")
             df.columns = new_columns
         else:
-            # MultiIndex가 아닐 경우의 안전장치
             df.columns = [f"{col}_{ticker}" if ticker not in str(col) else str(col) for col in df.columns]
 
-        # 데이터 검증 (혹시 대소문자가 다를 경우를 대비한 추가 방어)
-        target_col = f"Close_{ticker}"
-        if target_col not in df.columns:
-            # 소문자로 비교해서 찾아보기
-            for c in df.columns:
-                if f"close_{ticker}".lower() == str(c).lower():
-                    df = df.rename(columns={c: target_col})
-                    break
-
-        if target_col not in df.columns:
-            print(f"❌ {ticker}: 핵심 데이터({target_col})를 찾을 수 없습니다. (현재 컬럼: {list(df.columns)})")
-            return pd.DataFrame()
-
-        # 날짜 포맷 통일
+        # 날짜 포맷 정리
         df = df.reset_index()
-
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
             df = df.drop_duplicates(subset=['Date'], keep='last')
             df = df.set_index('Date')
             return df.dropna()
-        else:
-            return pd.DataFrame()
+
+        return pd.DataFrame()
 
     except Exception as e:
-        print(f"❌ {ticker} 처리 중 치명적 오류: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ {ticker} 수집 중 오류: {e}")
         return pd.DataFrame()

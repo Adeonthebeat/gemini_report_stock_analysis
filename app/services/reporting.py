@@ -28,63 +28,85 @@ def scan_steady_growth_stocks():
 
     query = text("""
         WITH daily_stats AS (
-            SELECT 
-                d.ticker,
-                d.date,
-                d.close,
-                -- 3개월(약 60거래일), 1주일(약 5거래일) 전 종가 계산
-                LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
-                LAG(d.close, 5) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_1w_ago
-            FROM price_daily d
-            JOIN stock_master m ON d.ticker = m.ticker
-            WHERE m.market_type = 'STOCK' 
-        ),
-        latest_stats AS (
-            SELECT * FROM daily_stats
-            WHERE date = (SELECT MAX(date) FROM price_daily)
-        ),
-        latest_finance AS (
-            SELECT f.* FROM financial_quarterly f
-            JOIN (
-                SELECT ticker, MAX(date) as max_date 
-                FROM financial_quarterly GROUP BY ticker
-            ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
-        ),
-        latest_weekly AS (
-            SELECT * FROM price_weekly
-            WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-        )
         SELECT 
-            s.ticker,
-            m.name,
-            s.close,
-            ROUND(CAST((s.close - s.close_3m_ago) / s.close_3m_ago * 100 AS numeric), 1) as return_3m_pct,
-            ROUND(CAST((s.close - s.close_1w_ago) / s.close_1w_ago * 100 AS numeric), 1) as return_1w_pct,
-            w.atr_stop_loss,  -- AI 손절선 데이터 유지
-            f.net_income,
-            f.rev_growth_yoy,
-            f.eps_growth_yoy
-        FROM latest_stats s
-        JOIN stock_master m ON s.ticker = m.ticker
-        JOIN latest_finance f ON s.ticker = f.ticker
-        LEFT JOIN latest_weekly w ON s.ticker = w.ticker
-        WHERE 
-            s.close_3m_ago IS NOT NULL
-            AND s.close_1w_ago IS NOT NULL
+            d.ticker,
+            d.date,
+            d.close,
+            d.volume, -- [추가] 거래량
+            -- 3개월(약 60거래일), 1주일(약 5거래일) 전 종가 계산
+            LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
+            LAG(d.close, 5) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_1w_ago,
+            
+            -- 60일 이동평균선 (중기 추세 확인용)
+            AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as ma_60,
+            
+            -- 🔥 [신규 필터용] 60일 평균 거래량 계산
+            AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as avg_vol_60,
+            
+            -- 52주(약 252거래일) 최고가 (신고가 근접도 계산용)
+            MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW) as high_52w
+            
+        FROM price_daily d
+        JOIN stock_master m ON d.ticker = m.ticker
+        WHERE m.market_type = 'STOCK' 
+    ),
+    latest_stats AS (
+        SELECT * FROM daily_stats
+        WHERE date = (SELECT MAX(date) FROM price_daily)
+    ),
+    latest_finance AS (
+        SELECT f.* FROM financial_quarterly f
+        JOIN (
+            SELECT ticker, MAX(date) as max_date 
+            FROM financial_quarterly GROUP BY ticker
+        ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
+    ),
+    latest_weekly AS (
+        SELECT * FROM price_weekly
+        WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
+    )
+    SELECT 
+        s.ticker,
+        m.name,
+        s.close,
+        -- 🔥 [수정] NULLIF를 사용하여 0으로 나누기(Division by Zero) 에러 원천 차단
+        ROUND(CAST((s.close - s.close_3m_ago) / NULLIF(s.close_3m_ago, 0) * 100 AS numeric), 1) as return_3m_pct,
+        ROUND(CAST((s.close - s.close_1w_ago) / NULLIF(s.close_1w_ago, 0) * 100 AS numeric), 1) as return_1w_pct,
+        
+        -- 52주 최고가 대비 현재가 비율 (100에 가까울수록 신고가)
+        ROUND(CAST((s.close / NULLIF(s.high_52w, 0)) * 100 AS numeric), 1) as pct_to_52w_high, 
+        
+        w.atr_stop_loss,
+        f.net_income,
+        f.rev_growth_yoy,
+        f.eps_growth_yoy
+    FROM latest_stats s
+    JOIN stock_master m ON s.ticker = m.ticker
+    JOIN latest_finance f ON s.ticker = f.ticker
+    LEFT JOIN latest_weekly w ON s.ticker = w.ticker
+    WHERE 
+        s.close_3m_ago IS NOT NULL
+        AND s.close_1w_ago IS NOT NULL
 
-            -- 🔥 1. 실적 우수 조건 (단순 >0 을 넘어 15% 이상 고성장으로 컷 설정)
-            AND f.net_income > 0                               
-            AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
+        -- 🛡️ [퀀트 핵심 필터] 쓰레기 데이터 및 동전주 펌핑 완벽 차단
+        AND s.close >= 10                  -- 현재가 10달러 이상 (우량주 최소 조건)
+        AND s.close_3m_ago >= 5            -- 3개월 전 가격도 5달러 이상 (액면분할 오류 및 페니주 차단)
+        AND s.avg_vol_60 >= 200000         -- 60일 평균 거래량 20만 주 이상 (유동성 부족 종목 차단)
 
-            -- 🔥 2. 중기 모멘텀 (3개월 동안 15% 이상 상승한 우상향 종목)
-            AND s.close >= s.close_3m_ago * 1.15
+        -- 1. 실적 우수 조건 (단순 >0 을 넘어 15% 이상 고성장으로 컷 설정)
+        AND f.net_income > 0                               
+        AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
 
-            -- 🔥 3. 단기 모멘텀 (최근 1주일 동안 3% 이상 급등한 종목)
-            AND s.close >= s.close_1w_ago * 1.03
+        -- 2. 중기/단기 모멘텀 (3개월 15% 상승, 1주 3% 상승)
+        AND s.close >= s.close_3m_ago * 1.15
+        AND s.close >= s.close_1w_ago * 1.03
+        
+        -- 3. 60일 이평선 위 (추세 살아있음)
+        AND s.close > s.ma_60
 
-        -- 단기 폭발력이 강하면서 중기 추세도 좋은 순으로 정렬
-        ORDER BY return_1w_pct DESC, return_3m_pct DESC
-        LIMIT 10;
+    -- 4. 신고가에 가장 근접한(또는 돌파한) 종목부터 최우선 정렬 -> 그 다음 단기 폭발력
+    ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
+    LIMIT 10;
     """)
 
     with engine.connect() as conn:

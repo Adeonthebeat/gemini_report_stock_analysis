@@ -6,98 +6,73 @@ import pandas as pd
 
 @task(name="Calculate-Metrics")
 def calculate_metrics(df, ticker, benchmark='VTI'):
-
-    # 데이터 길이 체크
+    # 1. 데이터 길이 체크 (퀀트 분석을 위해 최소 1년치인 252거래일 필요)
     if df.empty or len(df) < 252:
-        print(f"⚠️ {ticker}: 데이터 부족 (1년 미만)")
+        print(f"⚠️ {ticker}: 데이터 부족 (현재 {len(df)}행, 최소 252행 필요)")
         return None, None
 
-    # 윌리엄 오닐 스타일 가중 수익률
+    # 윌리엄 오닐 스타일 가중 수익률 계산 함수
     def calc_weighted_return(series):
-        if len(series) < 252: return 0
         try:
             curr = series.iloc[-1]
-            r1 = (curr / series.iloc[-63]) - 1
+            r1 = (curr / series.iloc[-63]) - 1  # 최근 3개월
             r2 = (series.iloc[-63] / series.iloc[-126]) - 1
             r3 = (series.iloc[-126] / series.iloc[-189]) - 1
             r4 = (series.iloc[-189] / series.iloc[-252]) - 1
             return (r1 * 0.4) + (r2 * 0.2) + (r3 * 0.2) + (r4 * 0.2)
-        except IndexError:
+        except Exception:
             return 0
 
-    # 컬럼 이름이 'Close_AAPL', 'Close_VTI' 형식으로 들어옴
+    # 2. [핵심] 리스트 다운로드 방식의 컬럼명 참조 (Close_Ticker 형태)
     try:
-        # [수정] 컬럼 이름 매핑
         t_close = df[f'Close_{ticker}']
         t_high = df[f'High_{ticker}']
         t_low = df[f'Low_{ticker}']
         t_vol = df[f'Volume_{ticker}']
-    except KeyError:
-        print(f"❌ {ticker}: 컬럼 찾기 실패. (fetch_combined_data 컬럼명 확인 필요)")
+        b_close = df[f'Close_{benchmark}']
+    except KeyError as e:
+        print(f"❌ {ticker}: 컬럼 매핑 실패 ({e}). 데이터 구조를 확인하세요.")
         return None, None
 
-    # 지표 계산
-    rs_score = calc_weighted_return(t_close) * 100
+    # 3. 기본 지표 계산
+    # RS Score: 종목의 가중수익률에서 벤치마크의 가중수익률을 뺌
+    rs_score = (calc_weighted_return(t_close) - calc_weighted_return(b_close)) * 100
 
     current_price = float(t_close.iloc[-1])
     sma200 = float(t_close.rolling(window=200).mean().iloc[-1])
     weekly_return = ((current_price / t_close.iloc[-6]) - 1) * 100
 
-    # ------------------------------------------------------------------
-    # 💡 [NEW] VCP (변동성 수축 필터) 계산
-    # 최근 20일간의 하루 진폭(고가-저가) 평균이 60일 진폭 평균 대비 75% 이하로 수축했는지 확인
-    # ------------------------------------------------------------------
+    # 4. 💡 VCP (변동성 수축 필터)
+    # 60일 평균 변동성 대비 최근 20일 변동성이 75% 이하로 줄었는지 확인
     daily_range = (t_high - t_low) / t_close
     volatility_20d = daily_range.tail(20).mean()
     volatility_60d = daily_range.tail(60).mean()
+    is_vcp = 1 if (volatility_60d > 0 and volatility_20d < (volatility_60d * 0.75)) else 0
 
-    is_vcp = 0
-    if volatility_60d > 0 and volatility_20d < (volatility_60d * 0.75):
-        is_vcp = 1
-
-    # ------------------------------------------------------------------
-    # 💡 [NEW] Volume Dry-up (거래량 고갈 필터) 계산
-    # 최근 5일 평균 거래량이 50일 평균 거래량의 60% 이하로 씨가 말랐는지 확인
-    # ------------------------------------------------------------------
+    # 5. 💡 Volume Dry-up (거래량 고갈 필터)
+    # 50일 평균 거래량 대비 최근 5일 평균 거래량이 60% 이하로 감소했는지 확인
     vol_50d_avg = t_vol.tail(50).mean()
     vol_5d_avg = t_vol.tail(5).mean()
+    is_vol_dry = 1 if (vol_50d_avg > 0 and vol_5d_avg < (vol_50d_avg * 0.6)) else 0
 
-    is_vol_dry = 0
-    if vol_50d_avg > 0 and vol_5d_avg < (vol_50d_avg * 0.6):
-        is_vol_dry = 1
-
-    # ------------------------------------------------------------------
-    # 💡 [NEW] ATR 14일 계산 및 동적 손절선 (Dynamic Risk Management)
-    # ------------------------------------------------------------------
+    # 6. 💡 ATR 기반 동적 리스크 관리
     prev_close = t_close.shift(1)
-    tr1 = t_high - t_low
-    tr2 = (t_high - prev_close).abs()
-    tr3 = (t_low - prev_close).abs()
-
-    # 3개 중 가장 큰 값이 True Range
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr = pd.concat([t_high - t_low, (t_high - prev_close).abs(), (t_low - prev_close).abs()], axis=1).max(axis=1)
     atr_14 = float(tr.tail(14).mean())
-
-    # 2-ATR 기준 손절선 계산
     atr_stop_loss = round(current_price - (2 * atr_14), 2)
 
-    # ------------------------------------------------------------------
-    # 날짜 포맷 안전하게 처리하기
-    # 앞단에서 날짜가 문자열로 넘어오든, datetime으로 넘어오든
-    # 무조건 다시 datetime으로 바꾼 뒤 -> YYYY-MM-DD 문자열로 뽑아냅니다.
-    # ------------------------------------------------------------------
+    # 7. 날짜 처리
     latest_date_obj = pd.to_datetime(df.index[-1])
     formatted_date = latest_date_obj.strftime('%Y-%m-%d')
-    # ------------------------------------------------------------------
 
-    # [중요] DB 저장용 딕셔너리
+    # 8. DB 저장용 데이터 구성
     daily_data = {
         "ticker": ticker,
-        "date": formatted_date,  # '2026-02-02'
-        "open": float(df[f'Open_{ticker}'].iloc[-1]),
-        "high": float(df[f'High_{ticker}'].iloc[-1]),
-        "low": float(df[f'Low_{ticker}'].iloc[-1]),
-        "close": current_price,
+        "date": formatted_date,
+        "open": round(float(df[f'Open_{ticker}'].iloc[-1]), 2),
+        "high": round(float(df[f'High_{ticker}'].iloc[-1]), 2),
+        "low": round(float(df[f'Low_{ticker}'].iloc[-1]), 2),
+        "close": round(current_price, 2),
         "volume": int(df[f'Volume_{ticker}'].iloc[-1])
     }
 
@@ -108,11 +83,9 @@ def calculate_metrics(df, ticker, benchmark='VTI'):
         "rs_value": round(float(rs_score), 2),
         "is_above_200ma": 1 if current_price > sma200 else 0,
         "deviation_200ma": round(((current_price / sma200) - 1) * 100, 2),
-
-        # [NEW] 새로 추가된 지표 적재
         "is_vcp": is_vcp,
         "is_vol_dry": is_vol_dry,
-        "atr_stop_loss": atr_stop_loss  # [NEW]
+        "atr_stop_loss": atr_stop_loss
     }
 
     return daily_data, weekly_data

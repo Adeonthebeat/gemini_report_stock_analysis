@@ -1,3 +1,6 @@
+import math
+
+import pandas as pd
 from prefect import task, flow, get_run_logger
 from sqlalchemy import text
 from app.core.database import get_engine
@@ -24,68 +27,57 @@ def get_tickers():
             return [{'ticker': row.ticker, 'market_type': 'STOCK'} for row in result]
 
 
-@task(name="Save-Data-To-DB")
-def save_to_sqlite(daily_result, weekly_result):
-    """
-    Supabase(PostgreSQL)에 데이터 저장 (Upsert)
-    * 함수 이름은 유지하되 내용은 Postgres 전용입니다.
-    """
-    logger = get_run_logger()
-    engine = get_engine()
-
-    with engine.begin() as conn:
-        # 1. 일간 데이터 저장 (소문자 테이블/컬럼)
-        # PostgreSQL에서는 DATE 타입에 문자열을 넣으면 자동으로 형변환됩니다.
-        conn.execute(text("""
-            INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
-            VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
-            ON CONFLICT(ticker, date) 
-            DO UPDATE SET 
-                close = EXCLUDED.close, 
-                volume = EXCLUDED.volume,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low
-        """), daily_result)
-
-        # 2. 주간 지표 데이터 저장 (소문자 테이블/컬럼)
-        conn.execute(text("""
-            INSERT INTO price_weekly (
-                ticker, weekly_date, weekly_return, rs_value, 
-                is_above_200ma, deviation_200ma, is_vcp, is_vol_dry, atr_stop_loss
-            )
-            VALUES (
-                :ticker, :weekly_date, :weekly_return, :rs_value, 
-                :is_above_200ma, :deviation_200ma, :is_vcp, :is_vol_dry, :atr_stop_loss
-            )
-            ON CONFLICT(ticker, weekly_date) 
-            DO UPDATE SET 
-                rs_value = EXCLUDED.rs_value, 
-                is_above_200ma = EXCLUDED.is_above_200ma,
-                deviation_200ma = EXCLUDED.deviation_200ma,
-                is_vcp = EXCLUDED.is_vcp,
-                is_vol_dry = EXCLUDED.is_vol_dry,
-                atr_stop_loss = EXCLUDED.atr_stop_loss
-        """), weekly_result)
-
-    # (선택) 로그가 너무 많으면 주석 처리
-    # logger.info(f"Saved: {daily_result['ticker']}")
-
-
 @task(name="Save-Data-Bulk")
 def save_to_sqlite_bulk(daily_list, weekly_list, chunk_size=500):
     logger = get_run_logger()
     engine = get_engine()
 
-    def execute_in_chunks(conn, table_name, data_list, query):
+    # 1. 치명적 원인 차단: NaN 변환 + 누락된 키 자동 보완
+    def clean_data(data_list, table_type):
+        cleaned = []
+        for row in data_list:
+            clean_row = {}
+            # NaN을 None으로 변환
+            for k, v in row.items():
+                if isinstance(v, float) and math.isnan(v):
+                    clean_row[k] = None
+                else:
+                    clean_row[k] = v
+
+            # [핵심 수정] Weekly 데이터의 경우 쿼리에서 요구하는 키가 없으면 None으로 채움
+            if table_type == "weekly":
+                if 'is_vcp' not in clean_row: clean_row['is_vcp'] = None
+                if 'is_vol_dry' not in clean_row: clean_row['is_vol_dry'] = None
+                if 'atr_stop_loss' not in clean_row: clean_row['atr_stop_loss'] = None
+
+            cleaned.append(clean_row)
+        return cleaned
+
+    # 데이터 클렌징 실행
+    cleaned_daily = clean_data(daily_list, "daily")
+    cleaned_weekly = clean_data(weekly_list, "weekly")
+
+    def execute_in_chunks(table_name, data_list, query):
         total = len(data_list)
+        if total == 0: return
+
         for i in range(0, total, chunk_size):
             chunk = data_list[i: i + chunk_size]
-            conn.execute(text(query), chunk)
-            logger.info(f"   └ [{table_name}] {min(i + chunk_size, total)}/{total} 완료...")
 
-    with engine.begin() as conn:
-        # 1. 일간 데이터 벌크 저장 (Upsert)
-        if daily_list:
+            try:
+                # 🚀 [핵심] 트랜잭션(begin)을 for문 안으로 이동!
+                # 50개가 끝날 때마다 무조건 DB에 영구 저장(Commit) 때려버림
+                with engine.begin() as conn:
+                    conn.execute(text(query), chunk)
+
+                logger.info(f"   └ 📦 [{table_name}] {min(i + chunk_size, total)}/{total} 영구 저장 완료!")
+
+            except Exception as e:
+                # 에러가 나면 해당 50개만 실패하고, 앞서 넣은 데이터는 안전하게 보존됨
+                logger.error(f"❌ [{table_name}] {i}번째 구간 에러: {e}")
+    # 2. 명시적 트랜잭션 에러 캡처 적용
+    try:
+        if cleaned_daily:
             daily_query = """
                 INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
                 VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
@@ -96,113 +88,33 @@ def save_to_sqlite_bulk(daily_list, weekly_list, chunk_size=500):
                     high = EXCLUDED.high,
                     low = EXCLUDED.low
             """
-            execute_in_chunks(conn, "price_daily", daily_list, daily_query)
+            execute_in_chunks("price_daily", cleaned_daily, daily_query)
 
-        # 2. 주간 지표 데이터 벌크 저장 (Upsert)
-        if weekly_list:
+        if cleaned_weekly:
             weekly_query = """
-                INSERT INTO price_weekly (ticker, weekly_date, weekly_return, rs_value, is_above_200ma, deviation_200ma)
-                VALUES (:ticker, :weekly_date, :weekly_return, :rs_value, :is_above_200ma, :deviation_200ma)
+                INSERT INTO price_weekly (
+                    ticker, weekly_date, weekly_return, rs_value, 
+                    is_above_200ma, deviation_200ma, is_vcp, is_vol_dry, atr_stop_loss
+                )
+                VALUES (
+                    :ticker, :weekly_date, :weekly_return, :rs_value, 
+                    :is_above_200ma, :deviation_200ma, :is_vcp, :is_vol_dry, :atr_stop_loss
+                )
                 ON CONFLICT(ticker, weekly_date) 
                 DO UPDATE SET 
                     rs_value = EXCLUDED.rs_value, 
                     is_above_200ma = EXCLUDED.is_above_200ma,
-                    deviation_200ma = EXCLUDED.deviation_200ma
+                    deviation_200ma = EXCLUDED.deviation_200ma,
+                    is_vcp = EXCLUDED.is_vcp,
+                    is_vol_dry = EXCLUDED.is_vol_dry,
+                    atr_stop_loss = EXCLUDED.atr_stop_loss
             """
-            execute_in_chunks(conn, "price_weekly", weekly_list, weekly_query)
+            execute_in_chunks("price_weekly", cleaned_weekly, weekly_query)
 
-    logger.info(f"✅ 총 {len(daily_list)}개 데이터 저장 프로세스 최종 완료")
+        logger.info(f"✅ 총 {len(cleaned_daily)}개 일간 / {len(cleaned_weekly)}개 주간 데이터 벌크 저장 최종 완료!")
 
-
-@flow(name="Initialize-DB")
-def init_db_flow():
-    """
-    Supabase(PostgreSQL) 테이블 초기화
-    * 대소문자 이슈 방지를 위해 모두 소문자로 생성
-    * 적절한 데이터 타입(VARCHAR, DATE, BIGINT) 사용
-    """
-    engine = get_engine()
-    with engine.begin() as conn:
-        # 1. 종목 마스터 (market_type 추가됨)
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS stock_master (
-                ticker VARCHAR(20) PRIMARY KEY,
-                name VARCHAR(255),
-                market_type VARCHAR(20) DEFAULT 'STOCK'
-            );
-        """))
-
-        # 2. 일간 가격 (DATE 타입, BIGINT 타입 사용)
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS price_daily (
-                ticker VARCHAR(20),
-                date DATE,
-                open REAL,
-                high REAL,
-                low REAL,
-                close REAL,
-                volume BIGINT,
-                PRIMARY KEY (ticker, date)
-            );
-        """))
-
-        # 3. 주간 데이터 (RS 지표 포함)
-        conn.execute(text("""
-           CREATE TABLE IF NOT EXISTS price_weekly (
-                ticker VARCHAR(20),
-                weekly_date DATE,
-                weekly_return REAL,
-                rs_value REAL, 
-                is_above_200ma INTEGER,
-                deviation_200ma REAL,
-                rs_rating REAL,
-                rs_momentum REAL,
-                stock_grade VARCHAR(10),
-                is_vcp INTEGER DEFAULT 0,
-                is_vol_dry INTEGER DEFAULT 0,
-                atr_stop_loss REAL,        -- [NEW] 2-ATR 기준 손절선 추가됨!
-                rs_trend VARCHAR(10),      -- [NEW] 모멘텀 트렌드 추가됨!
-                PRIMARY KEY (ticker, weekly_date)
-            );
-        """))
-
-        # 4. 재무 기본 정보
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS stock_fundamentals (
-                ticker VARCHAR(20) PRIMARY KEY,
-                latest_q_date DATE,
-                fundamental_grade VARCHAR(10),
-                eps_rating REAL,
-                updated_at TIMESTAMP
-            );
-        """))
-
-        # 5. [추가] 리포트용 상세 재무 테이블 (쿼터)
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS financial_quarterly (
-                ticker VARCHAR(20),
-                date DATE,
-                net_income BIGINT,
-                revenue BIGINT,
-                rev_growth_yoy REAL,
-                eps_growth_yoy REAL,
-                PRIMARY KEY (ticker, date)
-            );
-        """))
-
-        # 6. [추가] 리포트용 상세 재무 테이블 (연간 - ROE용)
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS financial_annual (
-                ticker VARCHAR(20),
-                year INTEGER,
-                net_income BIGINT,
-                revenue BIGINT,
-                roe REAL,
-                PRIMARY KEY (ticker, year)
-            );
-        """))
-
-    print("✅ Supabase(PostgreSQL) 테이블 초기화 및 스키마 점검 완료")
+    except Exception as e:
+        logger.error(f"❌ DB 벌크 저장 중 치명적 에러 발생: {e}")
 
 
 def get_finished_tickers(target_date_str):
@@ -219,3 +131,25 @@ def get_finished_tickers(target_date_str):
 
     # 예: {'AAPL', 'TSLA', 'NVDA'} 형태의 집합(Set)으로 반환
     return {row[0] for row in result}
+
+
+def check_db_insertion():
+    engine = get_engine()
+
+    with engine.connect() as conn:
+        print("📊 [price_daily] 최신 입력 데이터 3건:")
+        daily_query = text("SELECT * FROM price_daily ORDER BY date DESC LIMIT 3")
+        print(pd.read_sql(daily_query, conn))
+
+        print("\n📊 [price_weekly] 최신 입력 데이터 3건:")
+        weekly_query = text("SELECT * FROM price_weekly ORDER BY weekly_date DESC LIMIT 3")
+        print(pd.read_sql(weekly_query, conn))
+
+        # 전체 데이터 개수 카운트
+        daily_cnt = conn.execute(text("SELECT count(*) FROM price_daily")).scalar()
+        weekly_cnt = conn.execute(text("SELECT count(*) FROM price_weekly")).scalar()
+        print(f"\n✅ 현재 DB 총 데이터 수 - 일간: {daily_cnt}개 / 주간: {weekly_cnt}개")
+
+
+if __name__ == "__main__":
+    check_db_insertion()
