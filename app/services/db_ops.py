@@ -72,28 +72,46 @@ def save_to_sqlite(daily_result, weekly_result):
 
 
 @task(name="Save-Data-Bulk")
-def save_to_sqlite_bulk(daily_list, weekly_list):
+def save_to_sqlite_bulk(daily_list, weekly_list, chunk_size=500):
     logger = get_run_logger()
     engine = get_engine()
 
-    with engine.begin() as conn:
-        # daily_list 통째로 삽입
-        conn.execute(text("""
-            INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
-            VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
-            ON CONFLICT(ticker, date) DO UPDATE SET 
-                close = EXCLUDED.close, volume = EXCLUDED.volume,
-                high = EXCLUDED.high, low = EXCLUDED.low
-        """), daily_list)
+    def execute_in_chunks(conn, table_name, data_list, query):
+        total = len(data_list)
+        for i in range(0, total, chunk_size):
+            chunk = data_list[i: i + chunk_size]
+            conn.execute(text(query), chunk)
+            logger.info(f"   └ [{table_name}] {min(i + chunk_size, total)}/{total} 완료...")
 
-        # weekly_list 통째로 삽입
-        conn.execute(text("""
-            INSERT INTO price_weekly (ticker, weekly_date, weekly_return, rs_value, is_above_200ma, deviation_200ma, atr_14)
-            VALUES (:ticker, :weekly_date, :weekly_return, :rs_value, :is_above_200ma, :deviation_200ma, :atr_14)
-            ON CONFLICT(ticker, weekly_date) DO UPDATE SET 
-                rs_value = EXCLUDED.rs_value, is_above_200ma = EXCLUDED.is_above_200ma,
-                deviation_200ma = EXCLUDED.deviation_200ma, atr_14 = EXCLUDED.atr_14
-        """), weekly_list)
+    with engine.begin() as conn:
+        # 1. 일간 데이터 벌크 저장 (Upsert)
+        if daily_list:
+            daily_query = """
+                INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
+                VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
+                ON CONFLICT(ticker, date) 
+                DO UPDATE SET 
+                    close = EXCLUDED.close, 
+                    volume = EXCLUDED.volume,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low
+            """
+            execute_in_chunks(conn, "price_daily", daily_list, daily_query)
+
+        # 2. 주간 지표 데이터 벌크 저장 (Upsert)
+        if weekly_list:
+            weekly_query = """
+                INSERT INTO price_weekly (ticker, weekly_date, weekly_return, rs_value, is_above_200ma, deviation_200ma)
+                VALUES (:ticker, :weekly_date, :weekly_return, :rs_value, :is_above_200ma, :deviation_200ma)
+                ON CONFLICT(ticker, weekly_date) 
+                DO UPDATE SET 
+                    rs_value = EXCLUDED.rs_value, 
+                    is_above_200ma = EXCLUDED.is_above_200ma,
+                    deviation_200ma = EXCLUDED.deviation_200ma
+            """
+            execute_in_chunks(conn, "price_weekly", weekly_list, weekly_query)
+
+    logger.info(f"✅ 총 {len(daily_list)}개 데이터 저장 프로세스 최종 완료")
 
 
 @flow(name="Initialize-DB")

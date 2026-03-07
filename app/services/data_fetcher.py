@@ -47,45 +47,58 @@ def check_market_data_update(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, market_type='STOCK'):
-    # 내일 날짜까지 범위를 잡아야 오늘 데이터(미국 현지시간)가 포함됨
     end_date = datetime.now() + timedelta(days=1)
-    # 넉넉히 2년치 데이터 요청
     start_date = end_date - timedelta(days=730)
 
     print(f"📥 {ticker} ({market_type}) 데이터 수집 중... (~{end_date.strftime('%Y-%m-%d')})")
 
     try:
-        # 1. 데이터 다운로드 (에러 무시 옵션 추가)
         df = yf.download(ticker, start=start_date, end=end_date,
                          interval='1d', auto_adjust=True, progress=False)
 
-        # 2. 데이터가 비었는지 확인
         if df.empty:
             print(f"⚠️ {ticker}: 다운로드된 데이터가 없습니다.")
             return pd.DataFrame()
 
-        # ---------------------------------------------------------
-        # [Step 1] 인덱스(날짜) 정리부터 먼저 수행 (Timezone 제거)
-        # ---------------------------------------------------------
-        # yfinance는 종종 타임존이 포함된 날짜를 줍니다. 이걸 먼저 제거해야 뒤탈이 없습니다.
         try:
             df.index = df.index.tz_localize(None)
         except Exception:
-            pass # 이미 타임존이 없으면 패스
+            pass
 
-        df.index.name = 'Date' # 인덱스 이름을 'Date'로 강제 고정
+        df.index.name = 'Date'
 
-        # 단일 티커를 받았으므로 MultiIndex 평탄화 등 복잡한 로직이 전혀 필요 없습니다!
-        # 단순히 기존 코드 포맷(Close_AAPL 형태)에 맞게 컬럼명만 일괄 변경해 줍니다.
-        df.columns = [f"{col}_{ticker}" for col in df.columns]
+        # 🔥 [핵심 수정] MultiIndex 여부를 확인하고 안전하게 평탄화합니다.
+        if isinstance(df.columns, pd.MultiIndex):
+            new_columns = []
+            for col in df.columns:
+                c1 = str(col[0])
+                c2 = str(col[1])
+                # ('Close', 'AAPL') 이든 ('AAPL', 'Close') 이든 무조건 'Close_AAPL'로 만듦
+                if c1 == ticker:
+                    new_columns.append(f"{c2}_{ticker}")
+                elif c2 == ticker:
+                    new_columns.append(f"{c1}_{ticker}")
+                else:
+                    new_columns.append(f"{c1}_{ticker}")
+            df.columns = new_columns
+        else:
+            # MultiIndex가 아닐 경우의 안전장치
+            df.columns = [f"{col}_{ticker}" if ticker not in str(col) else str(col) for col in df.columns]
 
-        # 데이터 검증
+        # 데이터 검증 (혹시 대소문자가 다를 경우를 대비한 추가 방어)
         target_col = f"Close_{ticker}"
         if target_col not in df.columns:
-            print(f"❌ {ticker}: 핵심 데이터({target_col})를 찾을 수 없습니다.")
+            # 소문자로 비교해서 찾아보기
+            for c in df.columns:
+                if f"close_{ticker}".lower() == str(c).lower():
+                    df = df.rename(columns={c: target_col})
+                    break
+
+        if target_col not in df.columns:
+            print(f"❌ {ticker}: 핵심 데이터({target_col})를 찾을 수 없습니다. (현재 컬럼: {list(df.columns)})")
             return pd.DataFrame()
 
-        # 날짜 포맷 통일 (YYYY-MM-DD)
+        # 날짜 포맷 통일
         df = df.reset_index()
 
         if 'Date' in df.columns:
@@ -98,7 +111,6 @@ def fetch_combined_data(ticker, market_type='STOCK'):
 
     except Exception as e:
         print(f"❌ {ticker} 처리 중 치명적 오류: {e}")
-        # 디버깅을 위해 에러 내용 상세 출력
         import traceback
         traceback.print_exc()
         return pd.DataFrame()

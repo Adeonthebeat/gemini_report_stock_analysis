@@ -2,6 +2,7 @@
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pandas as pd
 import yfinance as yf # 날짜 확인용
 from datetime import datetime
 
@@ -59,17 +60,21 @@ def stock_analysis_pipeline():
         logger.error(f"❌ 티커 리스트 로드 실패: {e}")
         return
 
-    # 3. 재무데이터 수집 (토요일)
-    today_weekday = datetime.now().weekday()
-    if today_weekday in (4, 5) :
-        logger.info("📅 오늘은 토요일! 재무제표/펀더멘털 데이터를 전체 갱신합니다.")
+    # 3. 재무데이터 수집 (월말 마지막 영업일 여부 확인)
+    today = datetime.now().date()
+
+    # 이번 달의 마지막 영업일(Business Month End) 계산
+    # 'last_b_day'는 이번 달의 마지막 평일을 반환합니다.
+    last_b_day = (pd.Timestamp(today) + pd.offsets.BMonthEnd(0)).date()
+
+    if today == last_b_day:
+        logger.info(f"📅 오늘은 월말 마지막 영업일({today})입니다! 재무 데이터를 갱신합니다.")
         try:
             fetch_and_save_financials()
         except Exception as e:
             logger.error(f"❌ 재무제표 업데이트 중 오류 발생: {e}")
     else:
-        logger.info(f"⏩ 평일(요일코드: {today_weekday})이므로 재무제표 수집은 건너뜁니다.")
-
+        logger.info(f"⏩ 오늘은 영업일 중({today})이며, 월말({last_b_day})이 아니므로 재무 수집을 건너뜁니다.")
     # 4. 데이터 수집 루프
     logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
 
@@ -82,15 +87,30 @@ def stock_analysis_pipeline():
     skip_count = 0  # 스킵 카운트 추가
 
     # 1. 단일 종목 처리 함수 (리스트에 넣을 데이터를 반환만 함)
+    # 워커 1명이 할 일(함수) 정의
     def process_ticker(row):
         ticker = row['ticker']
-        df = fetch_combined_data(ticker, row.get('market_type', 'STOCK'))
-        if df.empty: return None
+        market_type = row.get('market_type', 'STOCK')
+        try:
+            df = fetch_combined_data(ticker, market_type)
+            # 데이터가 없으면 무조건 4개의 값을 반환
+            if df is None or df.empty:
+                return False, ticker, None, None
 
-        daily, weekly = calculate_metrics(df, ticker)
-        if daily is None or weekly is None: return None
+            # 🔥 [핵심 수정] calculate_metrics가 @task이기 때문에,
+            # 스레드 충돌을 막기 위해 뒤에 '.fn'을 붙여서 순수 함수로 강제 실행시킵니다!
+            daily, weekly = calculate_metrics.fn(df, ticker)
 
-        return daily, weekly
+            # 지표 계산에 실패해도 4개의 값을 반환
+            if daily is None or weekly is None:
+                return False, ticker, None, None
+
+            # 성공 시 4개의 값을 반환
+            return True, ticker, daily, weekly
+
+        except Exception as e:
+            # 어떤 에러가 나더라도 프로그램이 멈추지 않고 4개의 값을 안전하게 반환!
+            return False, ticker, None, None
 
     # 2. [병렬 처리] 워커 5명이 동시에 데이터를 마구잡이로 캐옴 (네트워크 I/O 최적화)
     logger.info("🚀 [1단계] 일꾼 10명이 동시에 데이터를 수집합니다...")
@@ -117,11 +137,13 @@ def stock_analysis_pipeline():
             logger.error(f"❌ DB 벌크 저장 실패: {e}")
 
     logger.info(f"📈 작업 완료 Summary (성공: {success_count} / 실패: {fail_count})")
+
     # 결과 요약
     logger.info(f"📈 작업 완료 Summary")
     logger.info(f"   - 성공(신규/갱신): {success_count}")
     logger.info(f"   - 스킵(이미완료): {skip_count}")
     logger.info(f"   - 실패: {fail_count}")
+
     # 5. 후처리 및 리포트
     logger.info("📊 RS 지표 업데이트 및 리포트 작성을 시작합니다.")
     try:
