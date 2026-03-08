@@ -1,9 +1,17 @@
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+import time  # 💡 [필수 수정] datetime의 time이 아니라, 파이썬 내장 time 모듈을 임포트해야 합니다!
 from prefect import task, get_run_logger
 from sqlalchemy import text
 from app.core.database import get_engine
+
+# 🚀 [추가] 스레드 통신 충돌 방지용 라이브러리
+import requests
+import threading
+
+# 💡 스레드별로 독립적인 세션을 보장하는 객체
+thread_local = threading.local()
 
 
 @task(name="Check-Market-Update")
@@ -12,12 +20,10 @@ def check_market_data_update(benchmark='VTI'):
     engine = get_engine()
 
     try:
-        # [수정 1] 벤치마크 데이터 가져오기
         market_df = yf.download(benchmark, period="5d", progress=False, auto_adjust=True)
         if market_df.empty:
             return False
-        
-        # [수정 2] 시장의 최신 날짜를 'YYYY-MM-DD' 포맷으로 추출 (DB와 포맷 통일)
+
         latest_market_date = market_df.index[-1].strftime('%Y-%m-%d')
         print(f"🔎 시장 최신 데이터 날짜: {latest_market_date}")
 
@@ -26,77 +32,113 @@ def check_market_data_update(benchmark='VTI'):
         return False
 
     with engine.connect() as conn:
-        # DB에서 가장 최근 날짜 가져오기
         query = text("select max(date) from price_daily where ticker = :ticker")
         result = conn.execute(query, {"ticker": benchmark}).scalar()
 
-    # [수정 3] DB 날짜가 있다면 문자열로 변환해서 비교
     if result:
-        # result가 datetime.date 객체일 경우 문자열로 변환
-        db_date_str = str(result)  # '2026-02-02' 형태가 됨
-        
+        db_date_str = str(result)
         print(f"🗄️ DB 저장된 최신 날짜: {db_date_str}")
 
-        # 문자열끼리 비교 (YYYY-MM-DD >= YYYY-MM-DD)
         if db_date_str >= latest_market_date:
             logger.info(f"✅ 이미 최신 데이터({db_date_str})입니다. 업데이트를 건너뜁니다.")
-            return True # 업데이트 안 함
+            return True
 
     logger.info(f"🚀 업데이트 필요 (DB: {result} vs Market: {latest_market_date})")
-    return False # 업데이트 진행
+    return False
 
 
-def fetch_combined_data(ticker, market_type='STOCK', benchmark='VTI'):
-    """
-    [이전 버전 복구]
-    - 리스트를 이용한 일괄 다운로드 방식
-    - yfinance의 기본 MultiIndex 구조 활용
-    """
+def fetch_benchmark_data(benchmark='VTI'):
+    """💡 [NEW] 벤치마크 데이터를 단 1회 다운로드하여 메모리에 캐싱"""
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=730)
 
-    print(f"📥 {ticker} 데이터 수집 중... (이전 버전 방식)")
+    print(f"🌐 벤치마크({benchmark}) 사전 로드 중...")
+    df = yf.download(benchmark, start=start_date, end=end_date, interval='1d', auto_adjust=True, progress=False)
 
-    try:
-        # 티커와 벤치마크를 리스트로 묶어 한 번에 다운로드
-        df = yf.download([ticker, benchmark], start=start_date, end=end_date,
-                         interval='1d', auto_adjust=True, progress=False, group_by='ticker')
+    if df.empty:
+        raise ValueError(f"벤치마크 {benchmark} 데이터를 가져오지 못했습니다.")
 
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df.index = df.index.tz_localize(None)
+    df.index.name = 'Date'
+    df.columns = [f"{col}_{benchmark}" for col in df.columns]
+
+    df = df.reset_index()
+    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+    return df.drop_duplicates(subset=['Date'], keep='last').set_index('Date')
+
+
+def fetch_combined_data(ticker, benchmark_df, market_type='STOCK'):
+    """💡 개별 종목 단독 다운로드 및 Pandas 결함 완벽 방어 + 재시도 로직"""
+    end_date = datetime.now() + timedelta(days=1)
+    start_date = end_date - timedelta(days=730)
+
+    try:  # <--- 문제의 제일 바깥쪽 try 시작
+        df = pd.DataFrame()
+        for attempt in range(3):
+            try:
+                # 🚀 [핵심 수정] yf.download() 대신 Ticker 객체 사용! (스레드 충돌 원천 차단)
+                ticker_obj = yf.Ticker(ticker)
+                df = ticker_obj.history(
+                    start=start_date,
+                    end=end_date,
+                    interval='1d',
+                    auto_adjust=True
+                )
+
+                if not df.empty:
+                    break
+
+            except RuntimeError as e:
+                if "dictionary changed size" in str(e):
+                    time.sleep(0.5)
+                    continue
+                else:
+                    raise e
+            except Exception as e:
+                time.sleep(0.5)
+                continue
+
+        # 3번 다 실패했거나 진짜로 데이터가 없는 경우
         if df.empty:
             return pd.DataFrame()
 
-        # 타임존 제거
-        try:
-            df.index = df.index.tz_localize(None)
-        except:
-            pass
+        # history() 함수는 컬럼이 한 줄이라 평탄화 작업이 필요 없지만 중복 방지는 둡니다.
+        df = df.loc[:, ~df.columns.duplicated()]
 
+        # 유효성 검사
+        if 'Close' not in df.columns or bool(df['Close'].isna().all()):
+            print(f"⚠️ {ticker}: 유효한 가격 데이터 없음 (상폐 의심)")
+            return pd.DataFrame()
+
+        # 인덱스 및 컬럼명 정리
+        df.index = df.index.tz_localize(None)
         df.index.name = 'Date'
+        df.columns = [f"{col}_{ticker}" for col in df.columns]
 
-        # MultiIndex 평탄화 (이전 방식)
-        if isinstance(df.columns, pd.MultiIndex):
-            new_columns = []
-            for col in df.columns:
-                c1, c2 = str(col[0]), str(col[1])
-                # Close_AAPL 또는 Close_VTI 형태로 통일
-                if c1 == ticker or c1 == benchmark:
-                    new_columns.append(f"{c2}_{c1}")
-                else:
-                    new_columns.append(f"{c1}_{c2}")
-            df.columns = new_columns
-        else:
-            df.columns = [f"{col}_{ticker}" if ticker not in str(col) else str(col) for col in df.columns]
-
-        # 날짜 포맷 정리
         df = df.reset_index()
-        if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
-            df = df.drop_duplicates(subset=['Date'], keep='last')
-            df = df.set_index('Date')
-            return df.dropna()
+        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+        df = df.drop_duplicates(subset=['Date'], keep='last').set_index('Date')
 
+        # VTI 조인 처리
+        if ticker == 'VTI':
+            combined_df = df
+        else:
+            combined_df = df.join(benchmark_df, how='left')
+
+        target_col = f"Close_{ticker}"
+        return combined_df.dropna(subset=[target_col])
+
+    # 🚀 [복구 완료!] 바깥쪽 try와 짝을 이루는 except 구문들
+    except ValueError as e:
+        if "No objects to concatenate" in str(e):
+            print(f"⚠️ {ticker}: 데이터 없음 (상장폐지/티커변경 의심 - 제외 처리됨)")
+        else:
+            print(f"❌ {ticker} 값 오류: {e}")
         return pd.DataFrame()
 
     except Exception as e:
-        print(f"❌ {ticker} 수집 중 오류: {e}")
+        print(f"❌ {ticker} 처리 중 알 수 없는 에러: {e}")
         return pd.DataFrame()

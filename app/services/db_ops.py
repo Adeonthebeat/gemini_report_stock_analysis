@@ -79,15 +79,16 @@ def save_to_sqlite_bulk(daily_list, weekly_list, chunk_size=500):
     try:
         if cleaned_daily:
             daily_query = """
-                INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
-                VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
-                ON CONFLICT(ticker, date) 
-                DO UPDATE SET 
-                    close = EXCLUDED.close, 
-                    volume = EXCLUDED.volume,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low
-            """
+                        INSERT INTO price_daily (ticker, date, open, high, low, close, volume)
+                        VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
+                        ON CONFLICT(ticker, date) 
+                        DO UPDATE SET 
+                            open = EXCLUDED.open,    -- 🚀 [핵심 수정] 누락되어 있던 open 값 업데이트 추가
+                            close = EXCLUDED.close, 
+                            volume = EXCLUDED.volume,
+                            high = EXCLUDED.high,
+                            low = EXCLUDED.low
+                    """
             execute_in_chunks("price_daily", cleaned_daily, daily_query)
 
         if cleaned_weekly:
