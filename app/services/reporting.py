@@ -21,113 +21,146 @@ from app.core.config import GOOGLE_API_KEY, BASE_DIR
 
 
 # ---------------------------------------------------------
-# 1. [Scanner] 실적 고성장 & 3개월/1주 듀얼 모멘텀 주도주 스캐닝
+# 1. [Scanner - C] 실적 고성장 & 모멘텀 주도주 스캐닝 (+ RS 가속도 추가)
 # ---------------------------------------------------------
 def scan_steady_growth_stocks():
     engine = get_engine()
 
     query = text("""
         WITH daily_stats AS (
+            SELECT 
+                d.ticker, d.date, d.close, d.volume,
+                LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
+                LAG(d.close, 5) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_1w_ago,
+                AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as ma_60,
+                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as avg_vol_60,
+                MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW) as high_52w
+            FROM price_daily d
+            JOIN stock_master m ON d.ticker = m.ticker
+            WHERE m.market_type = 'STOCK' 
+        ),
+        latest_stats AS (
+            SELECT * FROM daily_stats WHERE date = (SELECT MAX(date) FROM price_daily)
+        ),
+        latest_finance AS (
+            SELECT f.* FROM financial_quarterly f
+            JOIN (
+                SELECT ticker, MAX(date) as max_date 
+                FROM financial_quarterly GROUP BY ticker
+            ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
+        ),
+        -- 🌟 [RS 가속도 로직 추가] 1주 전 RS 점수 가져오기
+        weekly_data AS (
+            SELECT ticker, weekly_date, atr_stop_loss, rs_rating,
+                   LAG(rs_rating, 1) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_1w_ago
+            FROM price_weekly
+        ),
+        latest_weekly AS (
+            SELECT * FROM weekly_data WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
+        )
         SELECT 
-            d.ticker,
-            d.date,
-            d.close,
-            d.volume, -- [추가] 거래량
-            -- 3개월(약 60거래일), 1주일(약 5거래일) 전 종가 계산
-            LAG(d.close, 60) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_3m_ago,
-            LAG(d.close, 5) OVER (PARTITION BY d.ticker ORDER BY d.date) as close_1w_ago,
-            
-            -- 60일 이동평균선 (중기 추세 확인용)
-            AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as ma_60,
-            
-            -- 🔥 [신규 필터용] 60일 평균 거래량 계산
-            AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as avg_vol_60,
-            
-            -- 52주(약 252거래일) 최고가 (신고가 근접도 계산용)
-            MAX(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 251 PRECEDING AND CURRENT ROW) as high_52w
-            
-        FROM price_daily d
-        JOIN stock_master m ON d.ticker = m.ticker
-        WHERE m.market_type = 'STOCK' 
-    ),
-    latest_stats AS (
-        SELECT * FROM daily_stats
-        WHERE date = (SELECT MAX(date) FROM price_daily)
-    ),
-    latest_finance AS (
-        SELECT f.* FROM financial_quarterly f
-        JOIN (
-            SELECT ticker, MAX(date) as max_date 
-            FROM financial_quarterly GROUP BY ticker
-        ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
-    ),
-    latest_weekly AS (
-        SELECT * FROM price_weekly
-        WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-    )
-    SELECT 
-        s.ticker,
-        m.name,
-        s.close,
-        -- 🔥 [수정] NULLIF를 사용하여 0으로 나누기(Division by Zero) 에러 원천 차단
-        ROUND(CAST((s.close - s.close_3m_ago) / NULLIF(s.close_3m_ago, 0) * 100 AS numeric), 1) as return_3m_pct,
-        ROUND(CAST((s.close - s.close_1w_ago) / NULLIF(s.close_1w_ago, 0) * 100 AS numeric), 1) as return_1w_pct,
-        
-        -- 52주 최고가 대비 현재가 비율 (100에 가까울수록 신고가)
-        ROUND(CAST((s.close / NULLIF(s.high_52w, 0)) * 100 AS numeric), 1) as pct_to_52w_high, 
-        
-        w.atr_stop_loss,
-        f.net_income,
-        f.rev_growth_yoy,
-        f.eps_growth_yoy
-    FROM latest_stats s
-    JOIN stock_master m ON s.ticker = m.ticker
-    JOIN latest_finance f ON s.ticker = f.ticker
-    LEFT JOIN latest_weekly w ON s.ticker = w.ticker
-    WHERE 
-        s.close_3m_ago IS NOT NULL
-        AND s.close_1w_ago IS NOT NULL
-
-        -- 🛡️ [퀀트 핵심 필터] 쓰레기 데이터 및 동전주 펌핑 완벽 차단
-        AND s.close >= 10                  -- 현재가 10달러 이상 (우량주 최소 조건)
-        AND s.close_3m_ago >= 5            -- 3개월 전 가격도 5달러 이상 (액면분할 오류 및 페니주 차단)
-        AND s.avg_vol_60 >= 200000         -- 60일 평균 거래량 20만 주 이상 (유동성 부족 종목 차단)
-
-        -- 1. 실적 우수 조건 (단순 >0 을 넘어 15% 이상 고성장으로 컷 설정)
-        AND f.net_income > 0                               
-        AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
-
-        -- 2. 중기/단기 모멘텀 (3개월 15% 상승, 1주 3% 상승)
-        AND s.close >= s.close_3m_ago * 1.15
-        AND s.close >= s.close_1w_ago * 1.03
-        
-        -- 3. 60일 이평선 위 (추세 살아있음)
-        AND s.close > s.ma_60
-
-    -- 4. 신고가에 가장 근접한(또는 돌파한) 종목부터 최우선 정렬 -> 그 다음 단기 폭발력
-    ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
-    LIMIT 10;
+            s.ticker, m.name, s.close,
+            ROUND(CAST((s.close - s.close_3m_ago) / NULLIF(s.close_3m_ago, 0) * 100 AS numeric), 1) as return_3m_pct,
+            ROUND(CAST((s.close - s.close_1w_ago) / NULLIF(s.close_1w_ago, 0) * 100 AS numeric), 1) as return_1w_pct,
+            ROUND(CAST((s.close / NULLIF(s.high_52w, 0)) * 100 AS numeric), 1) as pct_to_52w_high, 
+            w.atr_stop_loss,
+            w.rs_rating,
+            (w.rs_rating - w.rs_1w_ago) as rs_accel, -- 🌟 RS 가속도 계산
+            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy
+        FROM latest_stats s
+        JOIN stock_master m ON s.ticker = m.ticker
+        JOIN latest_finance f ON s.ticker = f.ticker
+        LEFT JOIN latest_weekly w ON s.ticker = w.ticker
+        WHERE 
+            s.close_3m_ago IS NOT NULL AND s.close_1w_ago IS NOT NULL
+            AND s.close >= 10 AND s.close_3m_ago >= 5 AND s.avg_vol_60 >= 200000
+            AND f.net_income > 0 AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
+            AND s.close >= s.close_3m_ago * 1.15 AND s.close >= s.close_1w_ago * 1.03
+            AND s.close > s.ma_60
+        ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
+        LIMIT 10;
     """)
 
     with engine.connect() as conn:
         df = pd.read_sql(query, conn)
-
-    if df.empty:
-        print("🔍 [Scanner] 조건에 맞는 실적 모멘텀 종목이 없습니다.")
-        return []
-
-    return df.to_dict('records')
+    return [] if df.empty else df.to_dict('records')
 
 
 # ---------------------------------------------------------
-# 2. [Helper] 보조 함수들
+# 2. [NEW Scanner - D] 20일선 눌림목 (우상향 중 숨고르기)
+# ---------------------------------------------------------
+# ---------------------------------------------------------
+# 2. [NEW Scanner - D] 실적 기반 20일선 눌림목 (우량주 숨고르기)
+# ---------------------------------------------------------
+def scan_pullback_stocks():
+    """심신을 지켜주는 흑자/고성장 20일선 눌림목 매매 로직"""
+    engine = get_engine()
+
+    query = text("""
+        WITH daily_stats AS (
+            SELECT 
+                d.ticker, d.date, d.close, d.volume,
+                AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as ma_20,
+                AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) as ma_60,
+                AVG(d.volume) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as avg_vol_20
+            FROM price_daily d
+            JOIN stock_master m ON d.ticker = m.ticker
+            WHERE m.market_type = 'STOCK' 
+        ),
+        latest_stats AS (
+            SELECT * FROM daily_stats WHERE date = (SELECT MAX(date) FROM price_daily)
+        ),
+        latest_weekly AS (
+            SELECT ticker, atr_stop_loss, rs_rating FROM price_weekly 
+            WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
+        ),
+        -- 🌟 [NEW] 재무제표 최신 데이터 가져오기 (토 기운 보강)
+        latest_finance AS (
+            SELECT f.* FROM financial_quarterly f
+            JOIN (
+                SELECT ticker, MAX(date) as max_date 
+                FROM financial_quarterly GROUP BY ticker
+            ) recent ON f.ticker = recent.ticker AND f.date = recent.max_date
+        )
+        SELECT 
+            s.ticker, m.name, s.close,
+            ROUND(CAST(s.ma_20 AS numeric), 2) as ma_20,
+            ROUND(CAST((s.close / s.ma_20) * 100 AS numeric), 1) as pct_to_ma20,
+            w.atr_stop_loss, 
+            w.rs_rating,
+            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy -- [NEW] 재무 데이터 추출
+        FROM latest_stats s
+        JOIN stock_master m ON s.ticker = m.ticker
+        LEFT JOIN latest_weekly w ON s.ticker = w.ticker
+        JOIN latest_finance f ON s.ticker = f.ticker      -- 🌟 [NEW] 재무 테이블 조인
+        WHERE 
+            s.close >= 10
+
+            -- [차트 & 거래량 조건: 20일선 눌림목]
+            AND s.ma_20 > s.ma_60                         -- 중기 우상향 정배열
+            AND s.close > s.ma_60                         -- 60일선 위 (추세 생존)
+            AND (s.close / s.ma_20) BETWEEN 0.98 AND 1.02 -- 20일선 근접 (-2% ~ +2% 이격)
+            AND s.volume < s.avg_vol_20 * 0.7             -- 거래량 30% 이상 급감 (매도세 고갈)
+
+            -- 🌟 [기본적 분석 조건: 100억 멘탈 보호용 콘크리트 바닥]
+            AND f.net_income > 0                          -- 무조건 흑자 기업일 것
+            AND (f.rev_growth_yoy >= 10 OR f.eps_growth_yoy >= 10) -- 매출이나 EPS가 최소 10% 이상 성장 중일 것
+
+        ORDER BY w.rs_rating DESC NULLS LAST
+        LIMIT 10;
+    """)
+
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    return [] if df.empty else df.to_dict('records')
+
+# ---------------------------------------------------------
+# 3. [Helper] 보조 함수들
 # ---------------------------------------------------------
 def classify_status(row):
-    """재무 데이터를 기반으로 신호등 이모지 반환"""
     net_income = row.get('net_income') or 0
     rev_growth = row.get('rev_growth_yoy') or 0
     eps_growth = row.get('eps_growth_yoy') or 0
-
     if net_income > 0 and (rev_growth > 0 or eps_growth > 0):
         return "🟢 우량(성장)"
     elif net_income > 0:
@@ -138,59 +171,39 @@ def classify_status(row):
         return "🔴 위험"
 
 
-@retry(
-    wait=wait_random_exponential(multiplier=2, min=10, max=120),
-    stop=stop_after_attempt(10),
-    retry=retry_if_exception_type(exceptions.ResourceExhausted)
-)
+@retry(wait=wait_random_exponential(multiplier=2, min=10, max=120), stop=stop_after_attempt(10),
+       retry=retry_if_exception_type(exceptions.ResourceExhausted))
 def generate_content_safe(client, model_name, contents):
-    """Gemini API 호출 시 429 에러 자동 재시도"""
     print(f"🤖 API 호출 시도 중... (Model: {model_name})")
-    response = client.models.generate_content(
-        model=model_name,
-        contents=contents
-    )
-    return response.text
+    return client.models.generate_content(model=model_name, contents=contents).text
 
 
 def send_email(subject, markdown_content, report_date):
-    """이메일 발송 함수"""
-    EMAIL_USER = os.getenv("EMAIL_USER")
-    EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-    EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER")
-
+    EMAIL_USER, EMAIL_PASSWORD, EMAIL_RECEIVER = os.getenv("EMAIL_USER"), os.getenv("EMAIL_PASSWORD"), os.getenv(
+        "EMAIL_RECEIVER")
     if not EMAIL_USER or not EMAIL_PASSWORD or not EMAIL_RECEIVER:
-        print("⚠️ 이메일 환경변수가 설정되지 않아 발송을 건너뜁니다.")
+        print("⚠️ 이메일 환경변수 누락. 발송 건너뜀.")
         return
-
     try:
         html_body = markdown.markdown(markdown_content, extensions=['tables'])
         try:
-            template_dir = os.path.join(BASE_DIR, "app", "templates")
-            env = Environment(loader=FileSystemLoader(template_dir))
-            template = env.get_template('newsletter.html')
-            final_html = template.render(date=report_date, body_content=html_body)
+            env = Environment(loader=FileSystemLoader(os.path.join(BASE_DIR, "app", "templates")))
+            final_html = env.get_template('newsletter.html').render(date=report_date, body_content=html_body)
         except:
             final_html = f"<html><body><h2>{subject}</h2>{html_body}</body></html>"
-
         msg = MIMEMultipart('alternative')
-        msg['From'] = f"AI Stock Mentor <{EMAIL_USER}>"
-        msg['To'] = EMAIL_RECEIVER
-        msg['Subject'] = subject
+        msg['From'], msg['To'], msg['Subject'] = f"AI Stock Mentor <{EMAIL_USER}>", EMAIL_RECEIVER, subject
         msg.attach(MIMEText(final_html, 'html', 'utf-8'))
-
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASSWORD)
             server.send_message(msg)
-
         print(f"📧 뉴스레터 발송 완료! ({EMAIL_RECEIVER})")
-
     except Exception as e:
         print(f"❌ 이메일 발송 실패: {e}")
 
 
 # ---------------------------------------------------------
-# 3. [Main Task] AI 리포트 생성 및 발송
+# 4. [Main Task] AI 리포트 생성 및 발송
 # ---------------------------------------------------------
 @task(name="Generate-AI-Report")
 def generate_ai_report():
@@ -201,145 +214,141 @@ def generate_ai_report():
         logger = logging.getLogger("LocalRun")
 
     engine = get_engine()
-
     if not GOOGLE_API_KEY:
-        logger.error("GOOGLE_API_KEY가 설정되지 않았습니다.")
+        logger.error("GOOGLE_API_KEY 누락")
         return
-
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
-    # --- [STEP 1] 섹터 데이터 (Top-Down) ---
-    sector_query = text("""
-            SELECT  m.name as "Sector", w.ticker, w.rs_rating, w.weekly_return, w.is_above_200ma
-            FROM    price_weekly w
-            INNER JOIN stock_master m ON w.ticker = m.ticker
-            WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-            AND     m.market_type = 'SECTOR'
-            ORDER BY w.rs_rating DESC LIMIT 5;  
-        """)
+    # --- [STEP 1: A] 섹터 데이터 ---
     with engine.connect() as conn:
-        sector_df = pd.read_sql(sector_query, conn)
+        sector_df = pd.read_sql(text("""
+            SELECT m.name as "Sector", w.ticker, w.rs_rating, w.weekly_return, w.is_above_200ma
+            FROM price_weekly w JOIN stock_master m ON w.ticker = m.ticker
+            WHERE w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly) AND m.market_type = 'SECTOR'
+            ORDER BY w.rs_rating DESC LIMIT 5;  
+        """), conn)
+    sector_md = sector_df[['Sector', 'rs_rating', 'weekly_return']].to_markdown(
+        index=False) if not sector_df.empty else "(데이터 없음)"
 
-    if not sector_df.empty:
-        sector_df['200일선'] = sector_df['is_above_200ma'].apply(lambda x: "O" if x == 1 else "X")
-        sector_md = sector_df[['Sector', 'rs_rating', 'weekly_return', '200일선']].to_markdown(index=False)
-    else:
-        sector_md = "(섹터 데이터 없음)"
-
-    # --- [STEP 2] 주도주 데이터 (Bottom-Up) ---
+    # --- [STEP 2: B] 주도주 데이터 (+ RS 가속도) ---
     stock_query = text("""
+        WITH weekly_lag AS (
+            SELECT ticker, weekly_date, rs_rating, rs_trend, atr_stop_loss, is_above_200ma, deviation_200ma, is_vcp, is_vol_dry, weekly_return,
+                   LAG(rs_rating, 1) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_1w_ago,
+                   LAG(rs_rating, 2) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_2w_ago
+            FROM price_weekly
+        ),
+        current_weekly AS (
+            SELECT * FROM weekly_lag WHERE weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
+        )
         SELECT  m.name, w.ticker, d.close as today_close, 
                 ((d.close - d.open) / d.open * 100) as daily_change_pct,
-                w.rs_rating, w.rs_trend, w.atr_stop_loss, w.is_above_200ma, w.deviation_200ma,
-                w.is_vcp, w.is_vol_dry, -- 🚨 [중요] VCP와 거래량 지표를 SELECT에 반드시 추가해야 합니다!
+                w.rs_rating, 
+                (w.rs_rating - w.rs_1w_ago) as rs_accel, -- 🌟 RS 가속도
+                w.rs_trend, w.atr_stop_loss, w.deviation_200ma, w.is_vcp, w.is_vol_dry,
                 f.fundamental_grade, fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
-        FROM    price_weekly w
+        FROM current_weekly w
         INNER JOIN stock_master m ON w.ticker = m.ticker
         LEFT JOIN stock_fundamentals f ON w.ticker = f.ticker
         INNER JOIN price_daily d ON w.ticker = d.ticker AND d.date = (SELECT MAX(date) FROM price_daily)
         LEFT JOIN financial_quarterly fq ON w.ticker = fq.ticker AND fq.date = (SELECT MAX(date) FROM financial_quarterly WHERE ticker = w.ticker)
-        WHERE   w.weekly_date = (SELECT MAX(weekly_date) FROM price_weekly)
-        AND     m.market_type = 'STOCK'
-        AND     w.rs_rating >= 87
-        AND     w.rs_rating <= 95
-        AND     w.is_above_200ma = 1
-        AND     f.fundamental_grade IN ('A', 'B')
-        AND     w.weekly_return > 0
-        ORDER BY w.weekly_return DESC LIMIT 10;
+        WHERE w.rs_rating >= 80 
+        AND (w.rs_rating - w.rs_1w_ago) >= 3 -- 🌟 가속도가 3점 이상 붙은 진짜배기만 필터링
+        AND w.is_above_200ma = 1 AND f.fundamental_grade IN ('A', 'B') AND w.weekly_return > 0
+        AND m.market_type = 'STOCK'
+        ORDER BY rs_accel DESC LIMIT 10;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
 
-    if stock_df.empty:
-        stock_md = "(조건을 만족하는 주도주가 없습니다)"
-    else:
+    if not stock_df.empty:
         stock_df['비고'] = stock_df.apply(classify_status, axis=1)
         stock_df['오늘변동'] = stock_df['daily_change_pct'].apply(
             lambda x: f"🔺{x:.1f}%" if x > 0 else (f"▼{x:.1f}%" if x < 0 else "-"))
 
-    def format_weinstein_status(row):
-        dev = row['deviation_200ma'] or 0
-        # [NEW] VCP와 Volume Dry-up이 동시에 뜬 종목은 특수 마킹
-        vcp_signal = " ⭐압축완료" if (row.get('is_vcp') == 1 and row.get('is_vol_dry') == 1) else ""
+        def format_w(row):
+            dev = row['deviation_200ma'] or 0
+            vcp = " ⭐압축완료" if (row.get('is_vcp') == 1 and row.get('is_vol_dry') == 1) else ""
+            if dev >= 50: return f"과열({dev}%)" + vcp
+            if dev >= 0: return f"2단계({dev}%)" + vcp
+            return "이탈"
 
-        if dev >= 50: return f"과열({dev}%)" + vcp_signal
-        if dev >= 0: return f"2단계({dev}%)" + vcp_signal
-        return "이탈"
+        stock_df['추세상태'] = stock_df.apply(format_w, axis=1)
+        display_stock_df = stock_df[
+            ['ticker', 'name', 'today_close', '오늘변동', 'rs_rating', 'rs_accel', 'rs_trend', '추세상태', 'atr_stop_loss',
+             '비고']]
+        display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS점수', 'RS가속도', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
+        stock_md = display_stock_df.to_markdown(index=False)
+    else:
+        stock_md = "(조건 만족 주도주 없음)"
 
-    stock_df['추세상태'] = stock_df.apply(format_weinstein_status, axis=1)
-
-    # 💡 [NEW] AI가 보고서에 쓸 수 있도록 표에 'RS강도'와 'atr_stop_loss' 컬럼 추가!
-    display_stock_df = stock_df[['ticker', 'name', 'today_close', '오늘변동', 'rs_trend', '추세상태', 'atr_stop_loss', '비고']]
-    # 마크다운 표 헤더(한국어) 설정 (여기서 rs_trend가 'RS강도(추세)'로 예쁘게 이름이 바뀝니다)
-    display_stock_df.columns = ['티커', '종목명', '현재가', '일일변동', 'RS강도(추세)', '추세상태', '2-ATR손절선', '비고']
-    stock_md = display_stock_df.to_markdown(index=False)
-
-    # --- [STEP 3] ★ 스캐너 통합 (수정됨) ---
+    # --- [STEP 3: C] 스캐너 통합 (+ RS 가속도) ---
     try:
         steady_data = scan_steady_growth_stocks()
-
         if steady_data:
-            steady_df = pd.DataFrame(steady_data)
-
-            # 🔥 [핵심] 앞서 수정한 SQL 쿼리에 맞춰 추출할 컬럼 목록 업데이트
-            # VCP용 지표(고점괴리, 변동성) 대신 수익률 지표(3개월, 1주일)를 가져옵니다.
-            steady_df = steady_df[
+            steady_df = pd.DataFrame(steady_data)[
                 ['ticker', 'name', 'close', 'return_3m_pct', 'return_1w_pct', 'rev_growth_yoy', 'eps_growth_yoy',
-                 'atr_stop_loss']
-            ]
-
-            # 마크다운 표에 예쁘게 출력될 한글 헤더 (AI가 읽기 편하게)
-            steady_df.columns = ['티커', '종목명', '종가', '3개월수익률(%)', '1주일수익률(%)', '매출성장(%)', 'EPS성장(%)', '2-ATR손절선']
-
+                 'rs_rating', 'rs_accel', 'atr_stop_loss']]
+            steady_df.columns = ['티커', '종목명', '종가', '3개월수익률', '1주일수익률', '매출성장', 'EPS성장', 'RS점수', 'RS가속도', '2-ATR손절선']
             steady_md = steady_df.to_markdown(index=False)
         else:
-            # 리스트가 비어있을 때 AI가 당황하지 않게 자연스러운 문장 삽입
-            steady_md = "(현재 시장 환경상 실적 고성장과 듀얼 모멘텀 조건을 완벽히 만족하는 주도주가 없습니다. B 목록에 집중해주세요.)"
-
+            steady_md = "(조건 만족 스윙 주도주 없음)"
     except Exception as e:
-        logger.error(f"스캐너 실행 실패: {e}")
-        steady_md = f"(데이터 로드 실패. C 목록 없이 B 목록만으로 분석해주세요.)"
+        logger.error(f"스캐너 C 실패: {e}")
+        steady_md = "(데이터 로드 실패)"
 
-    # --- [STEP 4] 프롬프트 작성 및 AI 요청 ---
+    # --- [STEP 4: D] ★ 신규: 눌림목 데이터 ---
+    try:
+        pullback_data = scan_pullback_stocks()
+        if pullback_data:
+            pullback_df = pd.DataFrame(pullback_data)[
+                ['ticker', 'name', 'close', 'ma_20', 'pct_to_ma20', 'rs_rating', 'atr_stop_loss']]
+            pullback_df.columns = ['티커', '종목명', '종가(현재)', '20일선가격', '20일선대비이격(%)', 'RS점수', '2-ATR손절선']
+            pullback_md = pullback_df.to_markdown(index=False)
+        else:
+            pullback_md = "(현재 20일선 이격도 및 거래량 감소 조건을 만족하는 눌림목 종목이 없습니다)"
+    except Exception as e:
+        logger.error(f"스캐너 D 실패: {e}")
+        pullback_md = "(눌림목 데이터 로드 실패)"
+
+    # --- [STEP 5] 프롬프트 작성 및 AI 요청 (7종목 추천) ---
     prompt = f"""
         # Role: 전설적인 트레이딩 멘토 (AI Investment Strategist)
-        # Persona: 윌리엄 오닐, 니콜라스 다비스, 마크 미너비니, 터틀 트레이딩의 철학을 융합한 멘토. "친구야"라고 부르며 따뜻하지만 날카롭게 조언.
+        # Persona: 윌리엄 오닐, 니콜라스 다비스, 터틀 트레이딩 철학 융합. "친구야"라고 부르며 따뜻하지만 시장 앞에서는 냉철하게 조언.
 
         # Data Provided:
         ## [A] Sector Ranking (Top-Down):
         {sector_md}
 
         ## [B] Leading Stocks (Breakout Candidates):
-        * 'RS강도(추세)'의 UP 표시는 현재 RS가 4주 평균 이상으로 모멘텀이 살아있음을 뜻한다.
-        * '추세상태'에 '⭐'가 표시된 종목은 VCP(변동성 수축) 패턴과 거래량 고갈이 동시에 발생한 초강력 매수 후보이다.
-        * '2-ATR손절선'은 종목 고유의 변동성을 고려한 기계적 리스크 관리 가격이다.
+        * 'RS가속도'는 지난주 대비 RS 점수가 얼마나 급등했는지를 보여주는 폭발력 지표이다.
+        * '추세상태'의 '⭐'는 VCP 패턴 완성을 의미한다.
         {stock_md}
 
-        ## [C] High-Growth Momentum Stocks (Fundamental + Dual Momentum):
-        * 이 목록은 매출 또는 EPS가 15% 이상 고성장 중이며, 최근 3개월간 15% 이상 우상향(중기 추세)하고, 1주일 사이에도 3% 이상 상승(단기 수급 폭발)한 '실적 기반 주도주 급등 패턴' 종목들이다.
-        * 중기적인 추세가 살아있는 상태에서 단기적으로 스마트 머니가 강력하게 유입되고 있는 우량주들이다.
-        * 이 목록 역시 '2-ATR손절선' 데이터가 제공된다.
+        ## [C] High-Growth Momentum Stocks:
+        * 실적 고성장과 듀얼 모멘텀, 그리고 'RS가속도'가 동반된 급등 패턴 종목.
         {steady_md}
 
+        ## [D] Pullback Candidates (20MA Touch):
+        * 우상향 추세(20일선 > 60일선) 속에서 단기 조정을 받아 20일 이동평균선에 근접(±2%)하고 거래량이 급감한 종목들이다.
+        * 심리적 안정감과 손익비가 매우 뛰어난 눌림목 매매(Pullback) 후보들이다.
+        {pullback_md}
+
         # Request:
-        1. **시장 흐름 (Top-Down & Internal RS):** - [A]의 강한 섹터 내에 속한 [B] 종목이 있다면, "섹터의 수급(Internal RS)을 함께 받고 있는 진짜 주도주"라는 관점에서 분석해줘.
-        2. **오늘의 Top Pick (돌파 및 모멘텀 매매 전략):** - [B], [C] 목록을 바탕으로 '돌파매매(Breakout)' 및 '모멘텀 추종' 관점에서 최우선 5종목을 선정해주고 선정이유를 각 종목마다 써줘.
-           - 직전 저항선(Pivot Point)을 돌파하는 시점이나 폭발 전 단기 눌림목을 신규 매수 타점(Buy Point)으로 명시해주고 추가 매수 타점, 2-ATR 손절선을 말해줘.
-           - 특히 [B] 목록에서 '⭐' 마크가 있는 종목이 있다면, "매물 소화가 완료되어 폭발 직전인 차트"라는 점을 강조해줘.
-           - [C] 목록 종목이 선정될 경우, "실적 고성장을 바탕으로 중/단기 수급이 모두 쏠리고 있는 진짜 주도주"임을 강조해줘.
-        3. **리스크 관리 (Dynamic Stop-Loss):**
-           - 제공된 '2-ATR손절선' 가격을 구체적으로 언급하며, 이 가격을 이탈하면 미련 없이 빠져나올 기계적 손절 플랜을 강조해.
+        1. **시장 흐름:** [A]를 기반으로 현재 주도 섹터의 수급 흐름을 짚어줘.
+        2. **오늘의 Top Pick (총 7종목 선정):** - [B], [C] 목록에서 '돌파 및 모멘텀 (RS 가속도 강함)' 관점으로 4종목 선정.
+           - [D] 목록에서 '안전한 20일선 눌림목' 관점으로 3종목을 선정 (총 7종목).
+           - 각 종목별로 선정 이유와 함께 신규 매수 타점, 추가 매수 타점, 그리고 기계적 손절선(2-ATR)을 명확히 제시해.
+           - [D] 종목의 경우 "20일선 지지 확인 후 매수"라는 심리적 안정감을 강조해줘.
 
         [출력 형식 필수 지침]
-        * 경고: 어떠한 경우에도 표(Table) 형식이나 마크다운 테이블(|---|)을 사용하지 마세요.
-        * 이메일 본문으로 바로 사용할 수 있도록, 반드시 계층형 글머리 기호(Hierarchical bullet points)를 사용하고 핵심 키워드에는 굵은 글씨(Bold text)를 적용하여 강조해 주세요.
-        * 정확히 아래의 마크다운 템플릿 구조와 기호를 똑같이 복사해서 내용을 채워주세요.
+        * 경고: 어떠한 경우에도 표(Table) 형식이나 마크다운 테이블(|---|)을 사용하지 마세요. 계층형 글머리 기호를 사용하세요.
 
         [출력 템플릿]
-        🚀 **오늘의 Top 5 주도주 (돌파 & 모멘텀):**
+        🚀 **오늘의 Top 7 주도주 (돌파 & 눌림목):**
 
-        1. **종목명: [티커] ([전체 종목명])**
-            * **선정 이유:** [해당 종목이 선정된 이유를 상세히 서술]
+        1. **종목명: [티커] ([전체 종목명])** - [매매 전략 타입: 예) 돌파매매 or 눌림목매매]
+            * **선정 이유:** [해당 종목이 선정된 이유를 상세히 서술 (RS 가속도 또는 20일선 거래량 감소 언급)]
             * **신규 매수 타점 (Buy Point):** [매수 가격 및 시점 설명]
             * **추가 매수 타점:** [추가 매수 조건 및 가격]
             * **손절선 (2-ATR):** [제공된 2-ATR 손절선 가격을 반드시 명시할 것]
@@ -347,26 +356,14 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
-        report_content = generate_content_safe(
-            client,
-            'gemini-flash-lite-latest',
-            prompt
-        )
-
+        report_content = generate_content_safe(client, 'gemini-flash-lite-latest', prompt)
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
-
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        email_subject = f"📈 [Trend Report] {yesterday} 시장 분석 & 실적 우상향주"
-
-        send_email(email_subject, report_content, yesterday)
-
+        send_email(f"📈 [Trend Report] {yesterday} 주도주 돌파 & 눌림목 분석", report_content, yesterday)
     except Exception as e:
         logger.error(f"Gemini API 호출 최종 실패: {e}")
 
 
-# ---------------------------------------------------------
-# 4. [Execution] 통합 실행 진입점
-# ---------------------------------------------------------
 if __name__ == "__main__":
     load_dotenv()
     generate_ai_report()
