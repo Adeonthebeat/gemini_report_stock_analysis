@@ -83,13 +83,6 @@ def stock_analysis_pipeline():
 
     logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
 
-    daily_bulk_data = []
-    weekly_bulk_data = []
-
-    success_count = 0
-    fail_count = 0
-    skip_count = 0
-
     # 1. 단일 종목 처리 함수 (워커가 할 일)
     def process_ticker(row):
         ticker = row['ticker']
