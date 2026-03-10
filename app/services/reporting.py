@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader
 from prefect import task, get_run_logger
 from sqlalchemy import text
 from dotenv import load_dotenv
+import yfinance as yf
 
 # [재시도 로직용 라이브러리]
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
@@ -358,8 +359,9 @@ def generate_ai_report():
     try:
         report_content = generate_content_safe(client, 'gemini-flash-lite-latest', prompt)
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        send_email(f"📈 [Trend Report] {yesterday} 주도주 돌파 & 눌림목 분석", report_content, yesterday)
+        vti_check = yf.download('VTI', period='5d', progress=False, auto_adjust=True)
+        target_date_str = vti_check.index[-1].date().strftime('%Y-%m-%d')
+        send_email(f"📈 [Trend Report] {target_date_str} 주도주 돌파 & 눌림목 분석", report_content, target_date_str)
     except Exception as e:
         logger.error(f"Gemini API 호출 최종 실패: {e}")
 
