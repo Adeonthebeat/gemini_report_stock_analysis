@@ -1,7 +1,6 @@
 # [수정된 app/main.py]
 import logging
 import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import yfinance as yf  # 날짜 확인용
@@ -135,6 +134,19 @@ def stock_analysis_pipeline():
     import time  # 순차 대기용
 
     for row in ticker_list:
+
+        # 🚀 1. 먼저 row에서 ticker를 꺼내서 정의해줘야 합니다! (이게 없으면 에러남)
+        ticker = row['ticker']
+
+        if ticker in finished_tickers:
+            skip_count += 1
+            processed_count += 1
+
+            # 10개마다 진행 상황 출력 (스킵할 때도 로그는 찍히게)
+            if processed_count % 10 == 0 or processed_count == total_tickers:
+                logger.info(f"⏳ 수집 진행 중... {processed_count} / {total_tickers} 완료 (성공: {success_count}, 스킵: {skip_count}, 실패: {fail_count})")
+            continue  # 아래 다운로드 과정을 무시하고 다음 종목으로 넘어감
+
         # 워커(일꾼) 대신 메인 스레드가 직접 하나씩 함수를 실행합니다.
         success, ticker, daily, weekly, reason = process_ticker(row)
 
@@ -144,8 +156,6 @@ def stock_analysis_pipeline():
             weekly_bulk_data.append(weekly)
             success_count += 1
 
-            # 💡 정상 수집 시에도 아주 짧게 쉬어주면 야후 서버가 봇으로 의심하지 않습니다.
-            time.sleep(1.0)
         else:
             fail_count += 1
             logger.error(f"🚨 [{ticker}] 실패 사유: {reason}")

@@ -78,33 +78,21 @@ def fetch_combined_data(ticker, benchmark_df, market_type='STOCK'):
 
     try:
         df = pd.DataFrame()
-        for attempt in range(5):
-            try:
-                # 💡 스레드 동시 접속을 흩뿌리기 위한 필수 딜레이 (1~3초)
-                time.sleep(rnd.uniform(1.0, 3.0))
+        try:
 
-                # 🚀 [핵심 수정] Ticker.history 대신 yf.download 사용!
-                # 다중 스레드 환경에서 세션 충돌과 IP 차단에 훨씬 강합니다.
-                df = yf.download(
-                    ticker,
-                    start=start_date,
-                    end=end_date,
-                    progress=False,
-                    auto_adjust=True,
-                    threads=False  # yf 내부 스레딩 끄기 (이미 밖에서 스레드를 쓰고 있으므로)
-                )
+            # 🚀 [핵심 수정] Ticker.history 대신 yf.download 사용!
+            # 다중 스레드 환경에서 세션 충돌과 IP 차단에 훨씬 강합니다.
+            df = yf.download(
+                ticker,
+                start=start_date,
+                end=end_date,
+                progress=False,
+                auto_adjust=True,
+                threads=False  # yf 내부 스레딩 끄기 (이미 밖에서 스레드를 쓰고 있으므로)
+            )
 
-                if not df.empty:
-                    break
-                else:
-                    print(f"🔄 [{ticker}] 빈 데이터(차단 의심), {attempt + 1}차 재시도 대기...")
-                    # 차단당했을 경우 대기 시간을 확 늘려줍니다 (Exponential Backoff)
-                    time.sleep(rnd.uniform(3.0, 5.0) * (attempt + 1))
-
-            except Exception as e:
-                print(f"🔄 [{ticker}] 다운로드 에러({e}), {attempt + 1}차 재시도 중...")
-                time.sleep(rnd.uniform(3.0, 5.0) * (attempt + 1))
-                continue
+        except Exception as e:
+            print(f"🔄 [{ticker}] 다운로드 에러({e})")
 
         if df.empty:
             return pd.DataFrame()
