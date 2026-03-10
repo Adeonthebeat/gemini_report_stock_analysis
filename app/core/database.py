@@ -5,6 +5,7 @@ from app.core.config import BASE_DIR
 # 로컬 SQLite fallback (기존 코드 유지)
 from app.core.config import DB_URL
 
+
 def get_engine():
     DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -21,7 +22,7 @@ def get_engine():
             pool_timeout=30,  # 풀에서 커넥션을 가져올 때 최대 대기 시간 (무한 대기 방지)
             max_overflow=5,  # 최대 초과 생성 커넥션 수
             connect_args={
-                'connect_timeout': 10  # DB 서버 접속 자체의 타임아웃
+                'connect_timeout': 30  # DB 서버 접속 자체의 타임아웃
             }
         )
 
