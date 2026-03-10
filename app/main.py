@@ -121,33 +121,37 @@ def stock_analysis_pipeline():
     total_tickers = len(ticker_list)  # 전체 종목 수
     processed_count = 0  # 처리 완료된 종목 수 카운트
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {executor.submit(process_ticker, row): row for row in ticker_list}
+    # ----------------------------------------------------------------
+    # 🚀 [수정] 병렬 처리 제거 및 안전한 순차(Sequential) 수집 적용
+    # ----------------------------------------------------------------
+    logger.info("🚀 [1단계] 데이터를 하나씩 안전하게 순차적으로 수집합니다 (봇 탐지 방지)...")
 
-        for future in as_completed(futures):
-            # 🚀 반환값에 reason(실패 사유) 추가
-            success, ticker, daily, weekly, reason = future.result()
+    total_tickers = len(ticker_list)
+    processed_count = 0
 
-            if success:
-                daily_bulk_data.append(daily)
-                weekly_bulk_data.append(weekly)
-                success_count += 1
-            else:
-                fail_count += 1
-                # 🚀 [핵심 추가] 메인 로거를 이용해 실패 사유를 무조건 출력합니다!
-                logger.error(f"🚨 [{ticker}] 실패 사유: {reason}")
+    # ThreadPoolExecutor 대신 직관적인 for 문 사용
+    for row in ticker_list:
+        # 단일 종목 처리 함수 직접 호출
+        success, ticker, daily, weekly, reason = process_ticker(row)
 
-            processed_count += 1
-            if processed_count % 50 == 0 or processed_count == total_tickers:
-                logger.info(
-                    f"⏳ 수집 진행 중... {processed_count} / {total_tickers} 완료 (성공: {success_count}, 실패: {fail_count})")
-    # 바구니에 담긴 데이터를 DB에 단 1번의 쿼리로 꽂아버리기!
-    if daily_bulk_data and weekly_bulk_data:
-        logger.info(f"💾 계산 완료된 {success_count}개 데이터를 DB에 일괄 저장합니다 (Bulk Insert)...")
-        try:
-            save_to_sqlite_bulk(daily_bulk_data, weekly_bulk_data)
-        except Exception as e:
-            logger.error(f"❌ DB 벌크 저장 실패: {e}")
+        if success:
+            daily_bulk_data.append(daily)
+            weekly_bulk_data.append(weekly)
+            success_count += 1
+            # 💡 정상 수집 시에도 아주 짧게 쉬어주면 야후 서버가 좋아합니다.
+            import time
+            time.sleep(1.0)
+        else:
+            fail_count += 1
+            logger.error(f"🚨 [{ticker}] 실패 사유: {reason}")
+
+        processed_count += 1
+
+        # 순차 처리라 속도가 다소 느리므로, 진행 상황을 더 자주(예: 10개마다) 출력합니다.
+        if processed_count % 10 == 0 or processed_count == total_tickers:
+            logger.info(
+                f"⏳ 수집 진행 중... {processed_count} / {total_tickers} 완료 (성공: {success_count}, 실패: {fail_count})"
+            )
 
     # 결과 요약
     logger.info(f"📈 작업 완료 Summary")
