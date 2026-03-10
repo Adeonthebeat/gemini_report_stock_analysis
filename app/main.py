@@ -92,7 +92,6 @@ def stock_analysis_pipeline():
     skip_count = 0
 
     # 1. 단일 종목 처리 함수 (워커가 할 일)
-    # 1. 단일 종목 처리 함수 (워커가 할 일)
     def process_ticker(row):
         ticker = row['ticker']
         market_type = row.get('market_type', 'STOCK')
@@ -115,31 +114,37 @@ def stock_analysis_pipeline():
             # 🚀 진짜 코드 에러 반환
             return False, ticker, None, None, f"실행 중 에러 발생: {e}"
 
-    # 2. [병렬 처리] 10개의 스레드로 고속 수집
-    logger.info("🚀 [1단계] 일꾼 5명이 동시에 데이터를 수집합니다...")
+    logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
 
-    total_tickers = len(ticker_list)  # 전체 종목 수
-    processed_count = 0  # 처리 완료된 종목 수 카운트
+    # 🧺 빈 바구니 준비 (여기서 리스트가 초기화됩니다)
+    daily_bulk_data = []
+    weekly_bulk_data = []
+
+    success_count = 0
+    fail_count = 0
+    skip_count = 0
 
     # ----------------------------------------------------------------
-    # 🚀 [수정] 병렬 처리 제거 및 안전한 순차(Sequential) 수집 적용
+    # 🚀 [수정] ThreadPoolExecutor 대신 안전한 순차(Sequential) 수집
     # ----------------------------------------------------------------
     logger.info("🚀 [1단계] 데이터를 하나씩 안전하게 순차적으로 수집합니다 (봇 탐지 방지)...")
 
     total_tickers = len(ticker_list)
     processed_count = 0
 
-    # ThreadPoolExecutor 대신 직관적인 for 문 사용
+    import time  # 순차 대기용
+
     for row in ticker_list:
-        # 단일 종목 처리 함수 직접 호출
+        # 워커(일꾼) 대신 메인 스레드가 직접 하나씩 함수를 실행합니다.
         success, ticker, daily, weekly, reason = process_ticker(row)
 
         if success:
+            # 🧺 성공한 데이터를 바구니에 담습니다!
             daily_bulk_data.append(daily)
             weekly_bulk_data.append(weekly)
             success_count += 1
-            # 💡 정상 수집 시에도 아주 짧게 쉬어주면 야후 서버가 좋아합니다.
-            import time
+
+            # 💡 정상 수집 시에도 아주 짧게 쉬어주면 야후 서버가 봇으로 의심하지 않습니다.
             time.sleep(1.0)
         else:
             fail_count += 1
@@ -147,11 +152,22 @@ def stock_analysis_pipeline():
 
         processed_count += 1
 
-        # 순차 처리라 속도가 다소 느리므로, 진행 상황을 더 자주(예: 10개마다) 출력합니다.
+        # 10개마다 진행 상황 출력
         if processed_count % 10 == 0 or processed_count == total_tickers:
             logger.info(
                 f"⏳ 수집 진행 중... {processed_count} / {total_tickers} 완료 (성공: {success_count}, 실패: {fail_count})"
             )
+
+    # ----------------------------------------------------------------
+    # 🚀 2단계: 바구니에 담긴 데이터를 DB에 일괄 저장 (벌크 인서트)
+    # ----------------------------------------------------------------
+    if daily_bulk_data and weekly_bulk_data:
+        logger.info(f"💾 계산 완료된 {success_count}개 데이터를 DB에 일괄 저장합니다 (Bulk Insert)...")
+        try:
+            # 🧺 여기서 아까 채운 바구니를 DB 저장 함수로 넘겨줍니다!
+            save_to_sqlite_bulk(daily_bulk_data, weekly_bulk_data)
+        except Exception as e:
+            logger.error(f"❌ DB 벌크 저장 실패: {e}")
 
     # 결과 요약
     logger.info(f"📈 작업 완료 Summary")
