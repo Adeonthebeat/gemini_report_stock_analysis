@@ -25,7 +25,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity
+        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity yahooquery
 
     - name: Run Main Script
       env:
