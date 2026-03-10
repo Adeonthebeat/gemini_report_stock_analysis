@@ -121,7 +121,7 @@ def stock_analysis_pipeline():
     total_tickers = len(ticker_list)  # 전체 종목 수
     processed_count = 0  # 처리 완료된 종목 수 카운트
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(process_ticker, row): row for row in ticker_list}
 
         for future in as_completed(futures):

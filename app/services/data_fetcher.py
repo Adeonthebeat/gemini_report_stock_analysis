@@ -1,4 +1,4 @@
-from random import random
+import random as rnd
 
 import pandas as pd
 import yfinance as yf
@@ -73,50 +73,48 @@ def fetch_benchmark_data(benchmark='VTI'):
 
 
 def fetch_combined_data(ticker, benchmark_df, market_type='STOCK'):
-    """💡 개별 종목 단독 다운로드 및 Pandas 결함 완벽 방어 + 재시도 로직"""
     end_date = datetime.now() + timedelta(days=1)
     start_date = end_date - timedelta(days=730)
 
-    try:  # <--- 문제의 제일 바깥쪽 try 시작
+    try:
         df = pd.DataFrame()
         for attempt in range(5):
             try:
+                # 💡 스레드 동시 접속을 흩뿌리기 위한 필수 딜레이 (1~3초)
+                time.sleep(rnd.uniform(1.0, 3.0))
 
-                # 🚀 스레드들이 완벽히 동시에 요청하는 것을 방지 (0.1 ~ 0.5초 사이 랜덤 대기)
-                time.sleep(random.uniform(0.1, 0.5))
-
-                # 🚀 [핵심 수정] yf.download() 대신 Ticker 객체 사용! (스레드 충돌 원천 차단)
-                ticker_obj = yf.Ticker(ticker)
-                df = ticker_obj.history(
+                # 🚀 [핵심 수정] Ticker.history 대신 yf.download 사용!
+                # 다중 스레드 환경에서 세션 충돌과 IP 차단에 훨씬 강합니다.
+                df = yf.download(
+                    ticker,
                     start=start_date,
                     end=end_date,
-                    interval='1d',
-                    auto_adjust=True
+                    progress=False,
+                    auto_adjust=True,
+                    threads=False  # yf 내부 스레딩 끄기 (이미 밖에서 스레드를 쓰고 있으므로)
                 )
 
                 if not df.empty:
                     break
-
-            except RuntimeError as e:
-                if "dictionary changed size" in str(e):
-                    time.sleep(0.5)
-                    continue
                 else:
-                    raise e
+                    print(f"🔄 [{ticker}] 빈 데이터(차단 의심), {attempt + 1}차 재시도 대기...")
+                    # 차단당했을 경우 대기 시간을 확 늘려줍니다 (Exponential Backoff)
+                    time.sleep(rnd.uniform(3.0, 5.0) * (attempt + 1))
+
             except Exception as e:
-                time.sleep(0.5)
+                print(f"🔄 [{ticker}] 다운로드 에러({e}), {attempt + 1}차 재시도 중...")
+                time.sleep(rnd.uniform(3.0, 5.0) * (attempt + 1))
                 continue
 
-        # 3번 다 실패했거나 진짜로 데이터가 없는 경우
         if df.empty:
             return pd.DataFrame()
 
-        # history() 함수는 컬럼이 한 줄이라 평탄화 작업이 필요 없지만 중복 방지는 둡니다.
-        df = df.loc[:, ~df.columns.duplicated()]
+        # 🚀 yf.download 단일 종목 호출 시 발생하는 멀티인덱스 컬럼 평탄화 작업
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
         # 유효성 검사
         if 'Close' not in df.columns or bool(df['Close'].isna().all()):
-            print(f"⚠️ {ticker}: 유효한 가격 데이터 없음 (상폐 의심)")
             return pd.DataFrame()
 
         # 인덱스 및 컬럼명 정리
@@ -136,14 +134,6 @@ def fetch_combined_data(ticker, benchmark_df, market_type='STOCK'):
 
         target_col = f"Close_{ticker}"
         return combined_df.dropna(subset=[target_col])
-
-    # 🚀 [복구 완료!] 바깥쪽 try와 짝을 이루는 except 구문들
-    except ValueError as e:
-        if "No objects to concatenate" in str(e):
-            print(f"⚠️ {ticker}: 데이터 없음 (상장폐지/티커변경 의심 - 제외 처리됨)")
-        else:
-            print(f"❌ {ticker} 값 오류: {e}")
-        return pd.DataFrame()
 
     except Exception as e:
         print(f"❌ {ticker} 처리 중 알 수 없는 에러: {e}")
