@@ -1,3 +1,5 @@
+from random import random
+
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -77,8 +79,12 @@ def fetch_combined_data(ticker, benchmark_df, market_type='STOCK'):
 
     try:  # <--- 문제의 제일 바깥쪽 try 시작
         df = pd.DataFrame()
-        for attempt in range(3):
+        for attempt in range(5):
             try:
+
+                # 🚀 스레드들이 완벽히 동시에 요청하는 것을 방지 (0.1 ~ 0.5초 사이 랜덤 대기)
+                time.sleep(random.uniform(0.1, 0.5))
+
                 # 🚀 [핵심 수정] yf.download() 대신 Ticker 객체 사용! (스레드 충돌 원천 차단)
                 ticker_obj = yf.Ticker(ticker)
                 df = ticker_obj.history(

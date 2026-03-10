@@ -116,12 +116,12 @@ def stock_analysis_pipeline():
             return False, ticker, None, None, f"실행 중 에러 발생: {e}"
 
     # 2. [병렬 처리] 10개의 스레드로 고속 수집
-    logger.info("🚀 [1단계] 일꾼 10명이 동시에 데이터를 수집합니다...")
+    logger.info("🚀 [1단계] 일꾼 5명이 동시에 데이터를 수집합니다...")
 
     total_tickers = len(ticker_list)  # 전체 종목 수
     processed_count = 0  # 처리 완료된 종목 수 카운트
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(process_ticker, row): row for row in ticker_list}
 
         for future in as_completed(futures):
