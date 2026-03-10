@@ -1,22 +1,18 @@
-# [수정된 app/main.py]
 import logging
 import warnings
 
 import pandas as pd
-import yfinance as yf  # 날짜 확인용
+import yfinance as yf
 from datetime import datetime
 
 warnings.filterwarnings("ignore", message=".*Python version 3.9.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# 🚀 [핵심 추가] yfinance 내부 에러 로그 끄기 (CRITICAL 수준만 출력하도록 강제 설정)
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 
 from prefect import flow, get_run_logger
 
-# [수정] get_finished_tickers, save_to_sqlite_bulk 추가 임포트 (deactivate_ticker 제외)
 from app.services.db_ops import get_tickers, get_finished_tickers, save_to_sqlite_bulk
-# [수정] fetch_benchmark_data 추가 임포트
 from app.services.data_fetcher import check_market_data_update, fetch_combined_data, fetch_benchmark_data
 from app.services.analyzer import calculate_metrics, update_rs_indicators
 from app.services.reporting import generate_ai_report
