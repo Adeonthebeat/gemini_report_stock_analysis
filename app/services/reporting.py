@@ -101,7 +101,7 @@ def scan_pullback_stocks():
     engine = get_engine()
 
     query = text("""
-        WITH daily_stats AS (
+       WITH daily_stats AS (
             SELECT 
                 d.ticker, d.date, d.close, d.volume,
                 AVG(d.close) OVER (PARTITION BY d.ticker ORDER BY d.date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as ma_20,
@@ -132,24 +132,27 @@ def scan_pullback_stocks():
             ROUND(CAST((s.close / s.ma_20) * 100 AS numeric), 1) as pct_to_ma20,
             w.atr_stop_loss, 
             w.rs_rating,
-            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy -- [NEW] 재무 데이터 추출
+            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy, -- [NEW] 재무 데이터 추출
+            sf.roe -- 🌟 stock_fundamentals 테이블에서 roe 출력 추가
         FROM latest_stats s
         JOIN stock_master m ON s.ticker = m.ticker
         LEFT JOIN latest_weekly w ON s.ticker = w.ticker
         JOIN latest_finance f ON s.ticker = f.ticker      -- 🌟 [NEW] 재무 테이블 조인
+        LEFT JOIN stock_fundamentals sf ON s.ticker = sf.ticker -- 🌟 roe를 가져오기 위해 테이블 조인 추가
         WHERE 
             s.close >= 10
-
+        
             -- [차트 & 거래량 조건: 20일선 눌림목]
-            AND s.ma_20 > s.ma_60                         -- 중기 우상향 정배열
-            AND s.close > s.ma_60                         -- 60일선 위 (추세 생존)
+            AND s.ma_20 > s.ma_60                          -- 중기 우상향 정배열
+            AND s.close > s.ma_60                          -- 60일선 위 (추세 생존)
             AND (s.close / s.ma_20) BETWEEN 0.98 AND 1.02 -- 20일선 근접 (-2% ~ +2% 이격)
-            AND s.volume < s.avg_vol_20 * 0.7             -- 거래량 30% 이상 급감 (매도세 고갈)
-
+            AND s.volume < s.avg_vol_20 * 0.7              -- 거래량 30% 이상 급감 (매도세 고갈)
+        
             -- 🌟 [기본적 분석 조건: 100억 멘탈 보호용 콘크리트 바닥]
             AND f.net_income > 0                          -- 무조건 흑자 기업일 것
             AND (f.rev_growth_yoy >= 10 OR f.eps_growth_yoy >= 10) -- 매출이나 EPS가 최소 10% 이상 성장 중일 것
-
+            AND sf.roe > 0                                -- 🌟 roe 0 초과 조건 추가 완료
+        
         ORDER BY w.rs_rating DESC NULLS LAST
         LIMIT 10;
     """)
@@ -238,8 +241,8 @@ def generate_ai_report():
     stock_query = text("""
         WITH weekly_lag AS (
             SELECT ticker, weekly_date, rs_rating, rs_trend, atr_stop_loss, is_above_200ma, deviation_200ma, is_vcp, is_vol_dry, weekly_return,
-                   LAG(rs_rating, 1) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_1w_ago,
-                   LAG(rs_rating, 2) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_2w_ago
+                    LAG(rs_rating, 1) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_1w_ago,
+                    LAG(rs_rating, 2) OVER (PARTITION BY ticker ORDER BY weekly_date) as rs_2w_ago
             FROM price_weekly
         ),
         current_weekly AS (
@@ -250,7 +253,9 @@ def generate_ai_report():
                 w.rs_rating, 
                 (w.rs_rating - w.rs_1w_ago) as rs_accel, -- 🌟 RS 가속도
                 w.rs_trend, w.atr_stop_loss, w.deviation_200ma, w.is_vcp, w.is_vol_dry,
-                f.fundamental_grade, fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
+                f.fundamental_grade, 
+                f.roe, -- 🌟 roe 출력 추가
+                fq.net_income, fq.rev_growth_yoy, fq.eps_growth_yoy
         FROM current_weekly w
         INNER JOIN stock_master m ON w.ticker = m.ticker
         LEFT JOIN stock_fundamentals f ON w.ticker = f.ticker
@@ -260,6 +265,7 @@ def generate_ai_report():
         AND (w.rs_rating - w.rs_1w_ago) >= 3 -- 🌟 가속도가 3점 이상 붙은 진짜배기만 필터링
         AND w.is_above_200ma = 1 AND f.fundamental_grade IN ('A', 'B') AND w.weekly_return > 0
         AND m.market_type = 'STOCK'
+        AND f.roe > 0 -- 🌟 roe가 0보다 큰 조건 추가
         ORDER BY rs_accel DESC LIMIT 10;
     """)
     with engine.connect() as conn:
