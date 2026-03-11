@@ -34,7 +34,7 @@ def stock_analysis_pipeline():
     # ----------------------------------------------------------------
     try:
         vti_check = yf.download('VTI', period='5d', progress=False, auto_adjust=True)
-        target_date_str = vti_check.index[0].date().strftime('%Y-%m-%d')
+        target_date_str = vti_check.index[-1].date().strftime('%Y-%m-%d')
         logger.info(f"📅 이번 작업의 기준 날짜(Target Date): {target_date_str}")
 
         finished_tickers = get_finished_tickers(target_date_str)
