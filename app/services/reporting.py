@@ -67,7 +67,8 @@ def scan_steady_growth_stocks():
             w.atr_stop_loss,
             w.rs_rating,
             (w.rs_rating - w.rs_1w_ago) as rs_accel, -- 🌟 RS 가속도 계산
-            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy
+            f.net_income, f.rev_growth_yoy, f.eps_growth_yoy, 
+            f.roe -- 🌟 roe 조회 추가
         FROM latest_stats s
         JOIN stock_master m ON s.ticker = m.ticker
         JOIN latest_finance f ON s.ticker = f.ticker
@@ -76,6 +77,7 @@ def scan_steady_growth_stocks():
             s.close_3m_ago IS NOT NULL AND s.close_1w_ago IS NOT NULL
             AND s.close >= 10 AND s.close_3m_ago >= 5 AND s.avg_vol_60 >= 200000
             AND f.net_income > 0 AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
+            AND f.roe > 0 -- 🌟 roe가 0보다 큰 조건 추가
             AND s.close >= s.close_3m_ago * 1.15 AND s.close >= s.close_1w_ago * 1.03
             AND s.close > s.ma_60
         ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
