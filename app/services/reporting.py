@@ -81,6 +81,7 @@ def scan_steady_growth_stocks():
             AND sf.roe > 0 -- 🌟 roe 0 초과 조건 복구
             AND s.close >= s.close_3m_ago * 1.15 AND s.close >= s.close_1w_ago * 1.03
             AND s.close > s.ma_60
+            AND sf.fundamental_grade IN ('A', 'B')
         ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
         LIMIT 10;
     """)
