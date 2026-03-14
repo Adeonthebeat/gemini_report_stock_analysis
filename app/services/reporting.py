@@ -73,16 +73,16 @@ def scan_steady_growth_stocks():
         JOIN stock_master m ON s.ticker = m.ticker
         JOIN latest_finance f ON s.ticker = f.ticker
         LEFT JOIN latest_weekly w ON s.ticker = w.ticker
-        LEFT JOIN stock_fundamentals sf ON s.ticker = sf.ticker -- 🌟 새로운 테이블 조인
+        LEFT JOIN stock_fundamentals sf ON s.ticker = sf.ticker
         WHERE 
             s.close_3m_ago IS NOT NULL AND s.close_1w_ago IS NOT NULL
             AND s.close >= 10 AND s.close_3m_ago >= 5 AND s.avg_vol_60 >= 200000
             AND f.net_income > 0 AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
-            AND sf.roe > 0 -- 🌟 roe 0 초과 조건 복구
-            AND s.close >= s.close_3m_ago * 1.15 AND s.close >= s.close_1w_ago * 1.03
+            AND sf.roe > 0 
+            AND s.close >= s.close_3m_ago * 1.15 
             AND s.close > s.ma_60
             AND sf.fundamental_grade IN ('A', 'B')
-        ORDER BY pct_to_52w_high DESC, return_1w_pct DESC
+        ORDER BY rs_rating DESC, rs_accel DESC
         LIMIT 10;
     """)
 
@@ -91,9 +91,6 @@ def scan_steady_growth_stocks():
     return [] if df.empty else df.to_dict('records')
 
 
-# ---------------------------------------------------------
-# 2. [NEW Scanner - D] 20일선 눌림목 (우상향 중 숨고르기)
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # 2. [NEW Scanner - D] 실적 기반 20일선 눌림목 (우량주 숨고르기)
 # ---------------------------------------------------------
@@ -262,12 +259,14 @@ def generate_ai_report():
         LEFT JOIN stock_fundamentals f ON w.ticker = f.ticker
         INNER JOIN price_daily d ON w.ticker = d.ticker AND d.date = (SELECT MAX(date) FROM price_daily)
         LEFT JOIN financial_quarterly fq ON w.ticker = fq.ticker AND fq.date = (SELECT MAX(date) FROM financial_quarterly WHERE ticker = w.ticker)
-        WHERE w.rs_rating >= 80 
-        AND (w.rs_rating - w.rs_1w_ago) >= 3 -- 🌟 가속도가 3점 이상 붙은 진짜배기만 필터링
-        AND w.is_above_200ma = 1 AND f.fundamental_grade IN ('A', 'B') AND w.weekly_return > 0
+        WHERE w.rs_rating >= 80
+        AND (w.rs_rating - w.rs_1w_ago) >= 1 -- 🌟 가속도가 3점 이상 붙은 진짜배기만 필터링
+        AND w.is_above_200ma = 1 
+        AND f.fundamental_grade IN ('A') 
+        AND w.weekly_return > 0
         AND m.market_type = 'STOCK'
         AND f.roe > 0 -- 🌟 roe가 0보다 큰 조건 추가
-        ORDER BY rs_accel DESC LIMIT 10;
+        ORDER BY rs_rating DESC, rs_accel DESC LIMIT 10;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
