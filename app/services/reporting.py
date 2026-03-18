@@ -81,7 +81,7 @@ def scan_steady_growth_stocks():
             AND sf.roe > 0 
             AND s.close >= s.close_3m_ago * 1.15 
             AND s.close > s.ma_60
-            AND sf.fundamental_grade IN ('A', 'B')
+            AND sf.fundamental_grade IN ('A')
         ORDER BY rs_rating DESC, rs_accel DESC
         LIMIT 10;
     """)
