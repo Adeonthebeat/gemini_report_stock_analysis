@@ -25,7 +25,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity yahooquery
+        # 🚨 fakeredis 버전만 고정하여 prefect 실행 에러 방지 (나머지는 항상 최신 버전 유지)
+        pip install "fakeredis<2.26.0" pandas yfinance google-genai google-api-core sqlalchemy prefect python-dotenv tabulate markdown jinja2 psycopg2-binary tenacity yahooquery
 
     - name: Run Main Script
       env:
