@@ -13,6 +13,7 @@ from sqlalchemy import text
 from dotenv import load_dotenv
 import yfinance as yf
 import traceback
+from google.genai import errors
 
 # [재시도 로직용 라이브러리]
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
@@ -177,8 +178,11 @@ def classify_status(row):
         return "🔴 위험"
 
 
-@retry(wait=wait_random_exponential(multiplier=2, min=10, max=120), stop=stop_after_attempt(10),
-       retry=retry_if_exception_type(exceptions.ResourceExhausted))
+@retry(
+    wait=wait_random_exponential(multiplier=2, min=10, max=120), 
+    stop=stop_after_attempt(10),
+    retry=retry_if_exception_type(errors.APIError) # 🌟 신형 SDK 에러 타입으로 변경
+)
 def generate_content_safe(client, model_name, contents):
     print(f"🤖 API 호출 시도 중... (Model: {model_name})")
     return client.models.generate_content(model=model_name, contents=contents).text
