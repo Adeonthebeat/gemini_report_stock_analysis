@@ -85,7 +85,7 @@ def scan_steady_growth_stocks():
             AND s.close > s.ma_60
             AND sf.fundamental_grade IN ('A')
         ORDER BY rs_rating DESC, rs_accel DESC
-        LIMIT 10;
+        LIMIT 7;
     """)
 
     with engine.connect() as conn:
@@ -154,7 +154,7 @@ def scan_pullback_stocks():
             AND sf.roe > 0                                -- 🌟 roe 0 초과 조건 추가 완료
         
         ORDER BY w.rs_rating DESC NULLS LAST
-        LIMIT 10;
+        LIMIT 7;
     """)
 
     with engine.connect() as conn:
@@ -272,7 +272,7 @@ def generate_ai_report():
         AND w.weekly_return > 0
         AND m.market_type = 'STOCK'
         AND f.roe > 0 -- 🌟 roe가 0보다 큰 조건 추가
-        ORDER BY rs_rating DESC, rs_accel DESC LIMIT 10;
+        ORDER BY rs_rating DESC, rs_accel DESC LIMIT 7;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
@@ -372,7 +372,7 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
-        report_content = generate_content_safe(client, 'gemini-2.0-flash', prompt)
+        report_content = generate_content_safe(client, 'gemini-flash-lite-latest', prompt)
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
         vti_check = yf.download('VTI', period='5d', progress=False, auto_adjust=True)
         target_date_str = vti_check.index[-1].date().strftime('%Y-%m-%d')
