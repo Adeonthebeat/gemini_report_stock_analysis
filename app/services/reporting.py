@@ -372,7 +372,7 @@ def generate_ai_report():
 
     print("🤖 AI 리포트 생성 중...")
     try:
-        report_content = generate_content_safe(client, 'gemini-flash-lite-latest', prompt)
+        report_content = generate_content_safe(client, 'gemini-2.0-flash', prompt)
         print("\n" + "=" * 60 + "\n[Gemini Report]\n" + "=" * 60)
         vti_check = yf.download('VTI', period='5d', progress=False, auto_adjust=True)
         target_date_str = vti_check.index[-1].date().strftime('%Y-%m-%d')
