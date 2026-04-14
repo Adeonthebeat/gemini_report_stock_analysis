@@ -1,13 +1,12 @@
-name: Daily Stock Analysis Report
+name: Weekly Stock Analysis Report
 
 on:
   schedule:
-    # 🕒 한국 시간 아침 6시 43분 = UTC 전날 밤 21시 43분
-    # 미국 월요일 장 마감 -> 한국 화요일 아침 리포트이므로
-    # UTC 기준으로는 '월~금(1-5)'로 설정해야 함
-    - cron: '43 21 * * 1-5'
+    # 🕒 한국 시간 토요일 아침 6시 43분 = UTC 금요일 밤 21시 43분
+    # 미국 금요일 장 마감 직후 리포트를 생성하기 위해 요일을 '5'(금요일)로 변경
+    - cron: '43 21 * * 5'
 
-  workflow_dispatch: # 수동 실행 버튼 활성화
+  workflow_dispatch: # 수동 실행 유지
 
 jobs:
   stock-analysis:
