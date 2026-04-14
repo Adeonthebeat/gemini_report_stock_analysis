@@ -85,7 +85,7 @@ def scan_steady_growth_stocks():
             AND s.close > s.ma_60
             AND sf.fundamental_grade IN ('A')
         ORDER BY rs_rating DESC, rs_accel DESC
-        LIMIT 7;
+        LIMIT 10;
     """)
 
     with engine.connect() as conn:
@@ -154,7 +154,7 @@ def scan_pullback_stocks():
             AND sf.roe > 0                                -- 🌟 roe 0 초과 조건 추가 완료
         
         ORDER BY w.rs_rating DESC NULLS LAST
-        LIMIT 7;
+        LIMIT 10;
     """)
 
     with engine.connect() as conn:
@@ -272,7 +272,7 @@ def generate_ai_report():
         AND w.weekly_return > 0
         AND m.market_type = 'STOCK'
         AND f.roe > 0 -- 🌟 roe가 0보다 큰 조건 추가
-        ORDER BY rs_rating DESC, rs_accel DESC LIMIT 7;
+        ORDER BY rs_rating DESC, rs_accel DESC LIMIT 10;
     """)
     with engine.connect() as conn:
         stock_df = pd.read_sql(stock_query, conn)
