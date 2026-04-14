@@ -12,6 +12,7 @@ from prefect import task, get_run_logger
 from sqlalchemy import text
 from dotenv import load_dotenv
 import yfinance as yf
+import traceback
 
 # [재시도 로직용 라이브러리]
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
@@ -372,7 +373,12 @@ def generate_ai_report():
         target_date_str = vti_check.index[-1].date().strftime('%Y-%m-%d')
         send_email(f"📈 [Trend Report] {target_date_str} 주도주 돌파 & 눌림목 분석", report_content, target_date_str)
     except Exception as e:
+        print("\n" + "🚨" * 30)
+        print(f"❌ [에러 발생] 원인 파악을 위한 상세 로그:")
+        traceback.print_exc()  # 어디서 에러가 났는지 상세히 출력
+        print("🚨" * 30 + "\n")
         logger.error(f"Gemini API 호출 최종 실패: {e}")
+        raise  # 🌟 핵심! 에러를 던져야 Prefect가 Failed로 인식하고 멈춥니다.
 
 
 if __name__ == "__main__":
