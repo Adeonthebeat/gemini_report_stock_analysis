@@ -178,10 +178,11 @@ def classify_status(row):
         return "🔴 위험"
 
 
+# 예외 타입을 errors.APIError 로 변경하여 503, 429 에러 등을 모두 재시도하게 만듭니다.
 @retry(
     wait=wait_random_exponential(multiplier=2, min=10, max=120), 
-    stop=stop_after_attempt(10),
-    retry=retry_if_exception_type(errors.APIError) # 🌟 신형 SDK 에러 타입으로 변경
+    stop=stop_after_attempt(5), # 너무 많이 시도하면 무한 대기할 수 있으니 5~10회로 조절
+    retry=retry_if_exception_type(errors.APIError)
 )
 def generate_content_safe(client, model_name, contents):
     print(f"🤖 API 호출 시도 중... (Model: {model_name})")
