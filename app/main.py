@@ -54,21 +54,8 @@ def stock_analysis_pipeline():
         logger.error(f"❌ 티커 리스트 로드 실패: {e}")
         return
 
-    # 3. 재무데이터 수집 (월말 마지막 영업일 여부 확인)
-    today = datetime.now().date()
-    last_b_day = (pd.Timestamp(today) + pd.offsets.BMonthEnd(0)).date()
-
-    if today == last_b_day:
-        logger.info(f"📅 오늘은 월말 마지막 영업일({today})입니다! 재무 데이터를 갱신합니다.")
-        try:
-            fetch_and_save_financials()
-        except Exception as e:
-            logger.error(f"❌ 재무제표 업데이트 중 오류 발생: {e}")
-    else:
-        logger.info(f"⏩ 오늘은 영업일 중({today})이며, 월말({last_b_day})이 아니므로 재무 수집을 건너뜁니다.")
-
     # ----------------------------------------------------------------
-    # [구조 개선] 4. 데이터 수집 루프 전 벤치마크 단 1회 미리 로드
+    # [구조 개선] 3. 데이터 수집 루프 전 벤치마크 단 1회 미리 로드
     # ----------------------------------------------------------------
     logger.info("🌐 벤치마크(VTI) 데이터 1회 사전 캐싱 중 (API 최적화)...")
     try:
@@ -79,7 +66,7 @@ def stock_analysis_pipeline():
 
     logger.info("🚀 가격 데이터 수집 및 지표 계산을 시작합니다...")
 
-    # 1. 단일 종목 처리 함수 (워커가 할 일)
+    # 단일 종목 처리 함수 (워커가 할 일)
     def process_ticker(row):
         ticker = row['ticker']
         market_type = row.get('market_type', 'STOCK')

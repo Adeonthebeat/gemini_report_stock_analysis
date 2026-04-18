@@ -1,5 +1,5 @@
 import time
-
+import traceback
 import pandas as pd
 import numpy as np
 from sqlalchemy import text
@@ -29,6 +29,9 @@ def process_quarterly_data(engine, ticker, df_q, logger):
     df['asOfDate'] = pd.to_datetime(df['asOfDate'])
     df = df.sort_values('asOfDate', ascending=True)
     df = df.set_index('asOfDate')
+
+    # ⭐ [여기에 추가!] 중복 날짜가 있다면 가장 마지막(최신) 데이터만 남기고 제거
+    df = df[~df.index.duplicated(keep='last')]
 
     net_income = df.get('NetIncome', pd.Series(dtype=float))
     revenue = df.get('TotalRevenue', pd.Series(dtype=float))
@@ -78,7 +81,7 @@ def process_quarterly_data(engine, ticker, df_q, logger):
                 ) ON CONFLICT (ticker, date) DO UPDATE SET
                     net_income = EXCLUDED.net_income, revenue = EXCLUDED.revenue,
                     eps_basic = EXCLUDED.eps_basic, rev_growth_yoy = EXCLUDED.rev_growth_yoy,
-                    eps_growth_yoy = EXCLUDED.eps_growth_yoy
+                    eps_growth_yoy = EXCLUDED.eps_growth_yoy, inp_date = CURRENT_TIMESTAMP 
             """), rows_to_insert)
         logger.info(f"   └ 📦 {ticker}: 분기 실적 갱신")
 
@@ -105,6 +108,10 @@ def process_annual_data(engine, ticker, df_a_inc, df_a_bal, logger):
 
     df_inc = df_inc.set_index('asOfDate')
     df_bal = df_bal.set_index('asOfDate')
+
+    # ⭐ [여기에 추가!] 재무상태표, 손익계산서 모두 중복 날짜 제거
+    df_inc = df_inc[~df_inc.index.duplicated(keep='last')]
+    df_bal = df_bal[~df_bal.index.duplicated(keep='last')]
 
     merged = df_inc.join(df_bal, lsuffix='_fin', rsuffix='_bal')
 
@@ -141,7 +148,8 @@ def process_annual_data(engine, ticker, df_a_inc, df_a_bal, logger):
                 VALUES (:ticker, :year, :net_income, :revenue, :eps_basic, :roe)
                 ON CONFLICT (ticker, year) DO UPDATE SET
                     net_income = EXCLUDED.net_income, revenue = EXCLUDED.revenue,
-                    eps_basic = EXCLUDED.eps_basic, roe = EXCLUDED.roe
+                    eps_basic = EXCLUDED.eps_basic, roe = EXCLUDED.roe,
+                    inp_date = CURRENT_TIMESTAMP
             """), rows_to_insert)
         logger.info(f"   └ 📅 {ticker}: 연간 실적 갱신")
 
@@ -209,7 +217,7 @@ def process_stock_fundamentals(engine, ticker, logger):
                 eps_growth = EXCLUDED.eps_growth,
                 rev_growth = EXCLUDED.rev_growth,
                 roe = EXCLUDED.roe,
-                updated_at = EXCLUDED.updated_at
+                updated_at = CURRENT_TIMESTAMP
         """), {
             "ticker": ticker, "latest_q_date": q_data.date, "grade": grade, "score": total_score,
             "eps_growth": raw_eps_growth, "rev_growth": raw_rev_growth, "roe": raw_roe,
@@ -279,6 +287,7 @@ def fetch_and_save_financials():
             process_stock_fundamentals(engine, ticker, logger)
         except Exception as e:
             logger.error(f"❌ {ticker} 처리 실패: {e}")
+            logger.error(traceback.format_exc()) # 💡 [핵심] 아래 한 줄을 추가하면 에러가 발생한 위치를 아주 상세히 알려줍니다!
 
     logger.info("✅ 전체 재무/펀더멘털 데이터 강제 업데이트 완료")
 
