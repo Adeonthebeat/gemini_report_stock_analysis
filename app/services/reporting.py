@@ -79,8 +79,9 @@ def scan_steady_growth_stocks():
         WHERE 
             s.close_3m_ago IS NOT NULL AND s.close_1w_ago IS NOT NULL
             AND s.close >= 10 AND s.close_3m_ago >= 5 AND s.avg_vol_60 >= 200000
-            AND f.net_income > 0 AND (f.rev_growth_yoy >= 15 OR f.eps_growth_yoy >= 15) 
-            AND sf.roe > 0 
+            AND f.net_income > 0 AND f.rev_growth_yoy >= 15 
+            AND f.eps_growth_yoy >= 15
+            AND sf.roe > 10
             AND s.close >= s.close_3m_ago * 1.15 
             AND s.close > s.ma_60
             AND sf.fundamental_grade IN ('A')
@@ -138,7 +139,7 @@ def scan_pullback_stocks():
         JOIN stock_master m ON s.ticker = m.ticker
         LEFT JOIN latest_weekly w ON s.ticker = w.ticker
         JOIN latest_finance f ON s.ticker = f.ticker      -- 🌟 [NEW] 재무 테이블 조인
-        LEFT JOIN stock_fundamentals sf ON s.ticker = sf.ticker -- 🌟 roe를 가져오기 위해 테이블 조인 추가
+        INNER JOIN stock_fundamentals sf ON s.ticker = sf.ticker -- 🌟 roe를 가져오기 위해 테이블 조인 추가
         WHERE 
             s.close >= 10
         
@@ -150,8 +151,9 @@ def scan_pullback_stocks():
         
             -- 🌟 [기본적 분석 조건: 100억 멘탈 보호용 콘크리트 바닥]
             AND f.net_income > 0                          -- 무조건 흑자 기업일 것
-            AND (f.rev_growth_yoy >= 10 OR f.eps_growth_yoy >= 10) -- 매출이나 EPS가 최소 10% 이상 성장 중일 것
-            AND sf.roe > 0                                -- 🌟 roe 0 초과 조건 추가 완료
+            AND f.rev_growth_yoy >= 10 
+            AND f.eps_growth_yoy >= 10 -- 매출이나 EPS가 최소 10% 이상 성장 중일 것
+            AND sf.roe > 10                                -- 🌟 roe 0 초과 조건 추가 완료
         
         ORDER BY w.rs_rating DESC NULLS LAST
         LIMIT 10;
