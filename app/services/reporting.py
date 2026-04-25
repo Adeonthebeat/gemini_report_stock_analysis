@@ -75,7 +75,7 @@ def scan_steady_growth_stocks():
         JOIN stock_master m ON s.ticker = m.ticker
         JOIN latest_finance f ON s.ticker = f.ticker
         LEFT JOIN latest_weekly w ON s.ticker = w.ticker
-        LEFT JOIN stock_fundamentals sf ON s.ticker = sf.ticker
+        INNER JOIN stock_fundamentals sf ON s.ticker = sf.ticker
         WHERE 
             s.close_3m_ago IS NOT NULL AND s.close_1w_ago IS NOT NULL
             AND s.close >= 10 AND s.close_3m_ago >= 5 AND s.avg_vol_60 >= 200000
